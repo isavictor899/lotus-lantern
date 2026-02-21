@@ -10,8 +10,7 @@ import {
   Play, 
   Trash2, 
   RefreshCcw, 
-  Info, 
-  Settings 
+  Info
 } from 'lucide-react';
 
 /**
@@ -24,7 +23,25 @@ import {
 const SERVICE_UUID = '0000ffd5-0000-1000-8000-00805f9b34fb';
 const CHARACTERISTIC_UUID = '0000ffd9-0000-1000-8000-00805f9b34fb';
 
-export default function App() {
+// Inline SVG for the Activity icon since it's sometimes missing from standard lucide sets
+const Activity = (props) => (
+  <svg
+    {...props}
+    xmlns="http://www.w3.org/2000/svg"
+    width="24"
+    height="24"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    strokeWidth="2"
+    strokeLinecap="round"
+    strokeLinejoin="round"
+  >
+    <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+  </svg>
+);
+
+const App = () => {
   // --- Connection State ---
   const [device, setDevice] = useState(null);
   const [characteristic, setCharacteristic] = useState(null);
@@ -49,9 +66,9 @@ export default function App() {
   // --- BLUETOOTH CORE LOGIC ---
 
   const connect = async () => {
+    if (isConnecting) return;
     setIsConnecting(true);
     try {
-      // Browsers require a user gesture to trigger requestDevice
       const bleDevice = await navigator.bluetooth.requestDevice({
         filters: [
           { namePrefix: 'ELK' },
@@ -89,10 +106,6 @@ export default function App() {
     }
   };
 
-  /**
-   * Protocol for generic RGB controllers:
-   * [Header (0x56), R, G, B, Mode, Footer1 (0xf0), Footer2 (0xaa)]
-   */
   const sendCommand = async (r, g, b, mode = 0x00) => {
     if (!characteristic) return;
     
@@ -106,7 +119,7 @@ export default function App() {
     try {
       await characteristic.writeValue(data);
     } catch (e) {
-      // Errors can occur if sending too many commands too quickly
+      // Catch GATT rate-limit errors
     }
   };
 
@@ -157,11 +170,10 @@ export default function App() {
     analyserRef.current.getByteFrequencyData(dataArray);
     
     let sum = 0;
-    for (let i = 0; i < 8; i++) sum += dataArray[i];
-    const avg = sum / 8;
+    for (let i = 0; i < 10; i++) sum += dataArray[i];
+    const avg = sum / 10;
     
-    // Send light updates based on audio peaks
-    if (avg > 40) {
+    if (avg > 45) {
       sendCommand(color.r, color.g, color.b, Math.min(avg, 255));
     }
     animationFrameRef.current = requestAnimationFrame(processAudio);
@@ -198,7 +210,6 @@ export default function App() {
     return () => clearInterval(interval);
   }, [color]);
 
-  // Sync color changes with the device
   useEffect(() => {
     if (isConnected && !isMusicActive && activeTab !== 'timer') {
       const handler = setTimeout(() => {
@@ -209,26 +220,25 @@ export default function App() {
   }, [color, brightness, isConnected, isMusicActive, activeTab]);
 
   return (
-    <div className="min-h-screen bg-[#050505] text-slate-100 flex flex-col font-sans overflow-x-hidden selection:bg-cyan-500/30">
-      {/* App Header */}
-      <header className="p-5 flex justify-between items-center bg-black/40 backdrop-blur-xl border-b border-white/5 sticky top-0 z-50">
+    <div className="min-h-screen bg-[#020617] text-slate-100 flex flex-col font-sans selection:bg-indigo-500/30">
+      <header className="p-5 flex justify-between items-center bg-slate-900/40 backdrop-blur-2xl border-b border-white/5 sticky top-0 z-50">
         <div className="flex flex-col">
-          <h1 className="text-xl font-black tracking-tighter bg-gradient-to-tr from-cyan-400 via-purple-500 to-pink-500 bg-clip-text text-transparent italic">
-            LUMINA WEB
+          <h1 className="text-xl font-black tracking-tighter bg-gradient-to-tr from-cyan-400 via-indigo-500 to-purple-500 bg-clip-text text-transparent italic uppercase">
+            Lumina
           </h1>
           <div className="flex items-center gap-1 opacity-50">
-            <MapPin className="w-2.5 h-2.5 text-cyan-400" />
-            <span className="text-[9px] font-bold uppercase tracking-widest">Web Bluetooth Interface</span>
+            <Activity className="w-2.5 h-2.5 text-cyan-400" />
+            <span className="text-[9px] font-bold uppercase tracking-widest">Web BLE Protocol</span>
           </div>
         </div>
         
         <button 
           onClick={isConnected ? disconnect : connect}
           disabled={isConnecting}
-          className={`px-5 py-2.5 rounded-full text-xs font-bold transition-all duration-300 flex items-center gap-2 ${
+          className={`px-5 py-2 rounded-full text-xs font-bold transition-all duration-300 flex items-center gap-2 ${
             isConnected 
-            ? 'bg-green-500/10 text-green-400 border border-green-500/30 shadow-[0_0_15px_rgba(34,197,94,0.1)]' 
-            : 'bg-white text-black hover:bg-slate-200 shadow-lg shadow-white/10 active:scale-95'
+            ? 'bg-green-500/10 text-green-400 border border-green-500/30' 
+            : 'bg-white text-slate-950 hover:bg-slate-200 active:scale-95 shadow-lg shadow-white/5'
           }`}
         >
           {isConnecting ? (
@@ -238,55 +248,50 @@ export default function App() {
           ) : (
             <BluetoothOff className="w-3.5 h-3.5" />
           )}
-          {isConnecting ? 'Searching...' : isConnected ? 'Connected' : 'Connect'}
+          {isConnecting ? 'Linking...' : isConnected ? 'Online' : 'Scan'}
         </button>
       </header>
 
-      {/* Main Control Surface */}
       <main className="flex-1 max-w-lg mx-auto w-full p-6 space-y-10">
-        
-        {/* Intensity / Brightness */}
-        <section className="bg-white/5 p-6 rounded-[2rem] border border-white/5 space-y-5 shadow-inner">
+        <section className="bg-slate-900/50 p-6 rounded-[2.5rem] border border-white/5 space-y-5 shadow-2xl">
           <div className="flex justify-between items-center">
             <div className="flex items-center gap-2">
               <Sun className="w-4 h-4 text-yellow-400" />
-              <span className="text-xs font-bold text-slate-400 uppercase tracking-widest">Brightness</span>
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Intensity</span>
             </div>
-            <span className="text-xs font-mono bg-white/10 px-2 py-0.5 rounded text-white">{brightness}%</span>
+            <span className="text-xs font-mono bg-white/5 px-2 py-1 rounded text-white">{brightness}%</span>
           </div>
           <input 
             type="range" min="1" max="100" 
             value={brightness}
             onChange={(e) => setBrightness(parseInt(e.target.value))}
-            className="w-full h-1.5 bg-slate-800 rounded-lg appearance-none cursor-pointer accent-white"
+            className="w-full h-2 bg-slate-800 rounded-full appearance-none cursor-pointer accent-white"
           />
         </section>
 
-        {/* Tab Selection */}
-        <nav className="flex bg-white/5 p-1.5 rounded-2xl border border-white/5 shadow-2xl">
+        <nav className="flex bg-slate-900/80 p-1.5 rounded-3xl border border-white/5 shadow-2xl backdrop-blur-md">
           {[
-            { id: 'static', icon: <div className="w-3 h-3 rounded-full bg-gradient-to-tr from-blue-400 to-purple-500 shadow-[0_0_8px_rgba(96,165,250,0.5)]" />, label: 'Wheel' },
+            { id: 'static', icon: <div className="w-3.5 h-3.5 rounded-full bg-gradient-to-tr from-cyan-400 to-indigo-500" />, label: 'Static' },
             { id: 'dynamic', icon: <Zap className="w-3.5 h-3.5 text-yellow-400" />, label: 'FX' },
-            { id: 'music', icon: <Music className="w-3.5 h-3.5 text-pink-400" />, label: 'Music' },
-            { id: 'timer', icon: <Clock className="w-3.5 h-3.5 text-cyan-400" />, label: 'Timer' }
+            { id: 'music', icon: <Music className="w-3.5 h-3.5 text-pink-400" />, label: 'Vibe' },
+            { id: 'timer', icon: <Clock className="w-3.5 h-3.5 text-indigo-400" />, label: 'Timer' }
           ].map((tab) => (
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-xl transition-all ${
-                activeTab === tab.id ? 'bg-white/10 text-white shadow-xl' : 'text-slate-500 hover:text-slate-300'
+              className={`flex-1 flex flex-col items-center gap-1.5 py-3 rounded-2xl transition-all ${
+                activeTab === tab.id ? 'bg-white/10 text-white' : 'text-slate-500 hover:text-slate-300'
               }`}
             >
               {tab.icon}
-              <span className="text-[10px] font-bold uppercase tracking-tighter">{tab.label}</span>
+              <span className="text-[9px] font-black uppercase tracking-tighter">{tab.label}</span>
             </button>
           ))}
         </nav>
 
-        {/* Tab Content Panels */}
-        <div className="min-h-[400px]">
+        <div className="min-h-[420px]">
           {activeTab === 'static' && (
-            <div className="animate-in fade-in slide-in-from-bottom-5 duration-500 space-y-8">
+            <div className="animate-in fade-in slide-in-from-bottom-8 duration-500 space-y-8">
               <div className="grid grid-cols-4 gap-4">
                 {[
                   { r: 255, g: 0, b: 0 }, { r: 0, g: 255, b: 0 }, { r: 0, g: 0, b: 255 }, { r: 255, g: 255, b: 255 },
@@ -297,20 +302,22 @@ export default function App() {
                     key={i}
                     onClick={() => setColor({ r: c.r, g: c.g, b: c.b })}
                     style={{ backgroundColor: `rgb(${c.r}, ${c.g}, ${c.b})` }}
-                    className={`aspect-square rounded-2xl transition-transform active:scale-90 border-4 ${
-                      color.r === c.r && color.g === c.g && color.b === c.b ? 'border-white scale-110 shadow-lg shadow-white/20' : 'border-transparent shadow-md shadow-black/40'
+                    className={`aspect-square rounded-[1.5rem] transition-all active:scale-90 border-4 ${
+                      color.r === c.r && color.g === c.g && color.b === c.b ? 'border-white scale-110 shadow-lg shadow-white/20' : 'border-transparent shadow-md'
                     }`}
                   />
                 ))}
               </div>
-              <div className="p-6 bg-white/5 rounded-3xl border border-white/5 flex items-center justify-between group hover:border-white/20 transition-all">
+              <div className="p-6 bg-slate-900/50 rounded-[2.5rem] border border-white/5 flex items-center justify-between">
                 <div className="flex flex-col">
-                  <span className="text-xs font-bold text-slate-500 uppercase tracking-widest">Custom Hue</span>
-                  <span className="text-[10px] text-slate-600 mt-1 uppercase font-bold">RGB: {color.r}, {color.g}, {color.b}</span>
+                  <span className="text-[10px] font-black text-slate-500 uppercase tracking-widest">Hex Selector</span>
+                  <span className="text-[11px] font-mono text-indigo-400 mt-1 uppercase font-bold">
+                    #{color.r.toString(16).padStart(2,'0')}{color.g.toString(16).padStart(2,'0')}{color.b.toString(16).padStart(2,'0')}
+                  </span>
                 </div>
                 <input 
                   type="color"
-                  className="w-14 h-14 rounded-full cursor-pointer bg-transparent border-none outline-none scale-125 transition-transform hover:scale-150"
+                  className="w-16 h-16 rounded-full cursor-pointer bg-transparent border-none outline-none"
                   onChange={(e) => {
                     const h = e.target.value;
                     setColor({ 
@@ -326,21 +333,21 @@ export default function App() {
           )}
 
           {activeTab === 'dynamic' && (
-            <div className="space-y-3 animate-in fade-in slide-in-from-bottom-5 duration-500">
+            <div className="space-y-3 animate-in fade-in slide-in-from-bottom-8 duration-500">
               {[
-                { id: 'rainbow', name: 'Rainbow Cycle' },
-                { id: 'flash', name: '7-Color Flash' },
-                { id: 'strobe', name: 'Strobe White' },
-                { id: 'pulse_red', name: 'Breathing Red' }
+                { id: 'rainbow', name: 'Infinite Spectrum' },
+                { id: 'flash', name: 'Hyper Flash' },
+                { id: 'strobe', name: 'Pulse Strobe' },
+                { id: 'pulse_red', name: 'Vital Breath' }
               ].map((m) => (
                 <button
                   key={m.id}
                   onClick={() => setDynamicMode(m.id)}
-                  className="w-full p-5 bg-white/5 hover:bg-white/10 rounded-2xl flex items-center justify-between border border-white/5 transition-all group"
+                  className="w-full p-6 bg-slate-900/50 hover:bg-slate-800/80 rounded-[2rem] flex items-center justify-between border border-white/5 transition-all group active:scale-95"
                 >
-                  <span className="font-bold text-slate-200 tracking-tight">{m.name}</span>
-                  <div className="p-2 bg-white/10 rounded-full group-hover:bg-cyan-400 group-hover:text-black transition-all">
-                    <Play className="w-3.5 h-3.5" />
+                  <span className="font-black text-slate-200 tracking-tight uppercase text-xs">{m.name}</span>
+                  <div className="p-2.5 bg-white/5 rounded-full group-hover:bg-cyan-500 group-hover:text-black transition-all">
+                    <Play className="w-3.5 h-3.5 fill-current" />
                   </div>
                 </button>
               ))}
@@ -348,70 +355,47 @@ export default function App() {
           )}
 
           {activeTab === 'music' && (
-            <div className="flex flex-col items-center justify-center h-full py-10 space-y-10 animate-in zoom-in-95 duration-500">
-              <div className="relative group">
-                <div className={`absolute inset-[-20px] rounded-full blur-3xl transition-all duration-700 ${isMusicActive ? 'bg-pink-500/30 scale-150 opacity-100' : 'bg-transparent opacity-0'}`} />
-                <div className={`w-32 h-32 rounded-full flex items-center justify-center border-2 transition-all duration-500 ${isMusicActive ? 'border-pink-500 bg-pink-500 shadow-xl' : 'border-white/10 bg-white/5'}`}>
-                  <Music className={`w-12 h-12 ${isMusicActive ? 'text-white' : 'text-slate-700'}`} />
+            <div className="flex flex-col items-center justify-center h-full py-10 space-y-12 animate-in zoom-in-95 duration-500">
+              <div className="relative">
+                <div className={`absolute inset-[-30px] rounded-full blur-[50px] transition-all duration-700 ${isMusicActive ? 'bg-indigo-500/40 opacity-100' : 'bg-transparent opacity-0'}`} />
+                <div className={`w-40 h-40 rounded-full flex items-center justify-center border-4 transition-all duration-500 ${isMusicActive ? 'border-indigo-400 bg-indigo-500/20 shadow-xl' : 'border-white/10 bg-white/5'}`}>
+                  <Music className={`w-16 h-16 ${isMusicActive ? 'text-white' : 'text-slate-800'}`} />
                 </div>
-              </div>
-              <div className="text-center space-y-2">
-                <h3 className="text-lg font-black tracking-tight uppercase">Music Mode</h3>
-                <p className="text-[10px] text-slate-500 uppercase font-black tracking-widest leading-relaxed max-w-[200px] mx-auto">Microphone input fluctuates light intensity</p>
               </div>
               <button
                 onClick={startMusicSync}
-                className={`w-full py-5 rounded-[2rem] font-black text-sm tracking-widest uppercase transition-all active:scale-95 ${
-                  isMusicActive ? 'bg-white text-black' : 'bg-pink-600 text-white shadow-xl shadow-pink-900/20'
+                className={`w-full py-5 rounded-[2.5rem] font-black text-xs tracking-[0.3em] uppercase transition-all ${
+                  isMusicActive ? 'bg-white text-slate-950 shadow-2xl' : 'bg-indigo-600 text-white shadow-xl'
                 }`}
               >
-                {isMusicActive ? 'Stop Sync' : 'Activate Mic'}
+                {isMusicActive ? 'Mute Sync' : 'Sync Microphone'}
               </button>
             </div>
           )}
 
           {activeTab === 'timer' && (
-            <div className="space-y-8 animate-in fade-in slide-in-from-bottom-5 duration-500">
-              <div className="bg-white/5 p-8 rounded-[2.5rem] border border-white/5 space-y-6 shadow-inner">
-                <div className="flex flex-col items-center gap-2">
-                  <span className="text-[10px] font-black uppercase tracking-[0.3em] text-slate-500">Set Duration</span>
-                  <input 
-                    type="number" value={timerInput.minutes}
-                    onChange={(e) => setTimerInput({...timerInput, minutes: parseInt(e.target.value) || 0})}
-                    className="w-full bg-black rounded-3xl p-5 text-center text-3xl font-black border border-white/5 outline-none focus:border-cyan-500/50 transition-all shadow-inner"
-                  />
-                  <span className="text-xs font-bold text-slate-600 uppercase tracking-widest">Minutes</span>
+            <div className="space-y-10 animate-in fade-in slide-in-from-bottom-8 duration-500">
+              <div className="bg-slate-900/50 p-8 rounded-[3rem] border border-white/5 space-y-8">
+                <input 
+                  type="number" value={timerInput.minutes}
+                  onChange={(e) => setTimerInput({...timerInput, minutes: parseInt(e.target.value) || 0})}
+                  className="w-full bg-black/40 rounded-[2rem] p-6 text-center text-5xl font-black border border-white/5 outline-none"
+                />
+                <div className="flex gap-3">
+                  <button onClick={() => setTimerInput({...timerInput, action: 'on'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest ${timerInput.action === 'on' ? 'bg-green-500 text-slate-950 shadow-lg' : 'bg-white/5 text-slate-600'}`}>Power</button>
+                  <button onClick={() => setTimerInput({...timerInput, action: 'off'})} className={`flex-1 py-4 rounded-2xl text-[10px] font-black uppercase tracking-widest ${timerInput.action === 'off' ? 'bg-red-500 text-slate-950 shadow-lg' : 'bg-white/5 text-slate-600'}`}>Sleep</button>
                 </div>
-                
-                <div className="flex gap-2">
-                  <button onClick={() => setTimerInput({...timerInput, action: 'on'})} className={`flex-1 py-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${timerInput.action === 'on' ? 'bg-green-500 text-black shadow-lg shadow-green-900/20' : 'bg-white/5 text-slate-600 border border-white/5'}`}>Auto On</button>
-                  <button onClick={() => setTimerInput({...timerInput, action: 'off'})} className={`flex-1 py-4 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${timerInput.action === 'off' ? 'bg-red-500 text-black shadow-lg shadow-red-900/20' : 'bg-white/5 text-slate-600 border border-white/5'}`}>Auto Off</button>
-                </div>
-                
-                <button onClick={addTimer} className="w-full py-5 bg-white text-black rounded-[2rem] font-black uppercase text-xs tracking-widest shadow-2xl active:scale-95 transition-all">Start Timer</button>
+                <button onClick={addTimer} className="w-full py-5 bg-white text-slate-950 rounded-[2.5rem] font-black uppercase text-xs tracking-[0.3em] shadow-2xl">Enable Task</button>
               </div>
-              
-              <div className="space-y-4 px-2">
-                <div className="flex items-center gap-2">
-                  <Clock className="w-3 h-3 text-slate-600" />
-                  <span className="text-[10px] font-black uppercase tracking-widest text-slate-600">Active Tasks</span>
-                </div>
-                {timers.length === 0 && (
-                  <div className="py-10 text-center bg-white/[0.02] border border-dashed border-white/5 rounded-3xl">
-                    <p className="text-[10px] text-slate-700 uppercase font-black italic tracking-widest">No pending operations</p>
-                  </div>
-                )}
+              <div className="space-y-4">
                 {timers.map(t => (
-                  <div key={t.id} className="bg-white/5 p-5 rounded-3xl flex items-center justify-between border border-white/5 group hover:border-white/20 transition-all">
-                    <div className="flex items-center gap-4">
-                      <div className={`w-2 h-2 rounded-full ${t.action === 'on' ? 'bg-green-400 shadow-[0_0_10px_rgba(74,222,128,0.5)]' : 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.5)]'}`} />
-                      <div>
-                        <p className="text-[10px] font-black uppercase tracking-widest">Turn {t.action}</p>
-                        <p className="text-[9px] text-slate-500 mt-0.5 font-bold tracking-tighter uppercase">Approx. {Math.ceil((t.targetTime - Date.now()) / 60000)}m remaining</p>
-                      </div>
+                  <div key={t.id} className="bg-slate-900/50 p-6 rounded-[2rem] flex items-center justify-between border border-white/5 transition-all">
+                    <div className="flex items-center gap-5">
+                      <div className={`w-3 h-3 rounded-full ${t.action === 'on' ? 'bg-green-400' : 'bg-red-500'}`} />
+                      <p className="text-[11px] font-black uppercase tracking-widest">Execute {t.action} in {Math.ceil((t.targetTime - Date.now()) / 60000)}m</p>
                     </div>
-                    <button onClick={() => setTimers(timers.filter(tm => tm.id !== t.id))} className="p-2 text-slate-500 hover:text-red-500 transition-colors">
-                      <Trash2 className="w-3.5 h-3.5" />
+                    <button onClick={() => setTimers(timers.filter(tm => tm.id !== t.id))} className="text-slate-600 hover:text-red-500">
+                      <Trash2 className="w-4 h-4" />
                     </button>
                   </div>
                 ))}
@@ -420,51 +404,37 @@ export default function App() {
           )}
         </div>
 
-        {/* Informational Footer */}
-        <footer className="bg-cyan-500/5 rounded-[2rem] p-6 border border-cyan-500/10 flex gap-4">
-          <Info className="w-4 h-4 text-cyan-400 mt-1 shrink-0" />
+        <footer className="bg-indigo-500/5 rounded-[2.5rem] p-6 border border-indigo-500/10 flex gap-4">
+          <Info className="w-5 h-5 text-indigo-400 mt-0.5 shrink-0" />
           <p className="text-[10px] text-slate-500 leading-relaxed font-medium">
-            Web Bluetooth requires "Location Permissions" on Android devices to function. Lumina does not collect GPS data.
+            Web Bluetooth requires Location Permissions on Android. Lumina communicates locally; no position data is collected.
           </p>
         </footer>
       </main>
 
-      {/* Offline Barrier */}
       {!isConnected && (
-        <div className="fixed inset-0 bg-[#050505]/95 backdrop-blur-2xl z-[60] flex items-center justify-center p-8 text-center animate-in fade-in duration-700">
-          <div className="max-w-xs space-y-10">
-            <div className="relative group">
-              <div className="absolute inset-0 bg-white/10 blur-[60px] rounded-full scale-125 group-hover:bg-cyan-500/20 transition-all duration-700" />
-              <div className="relative z-10 p-10 bg-black rounded-[3.5rem] border border-white/10 shadow-3xl">
-                <Bluetooth className={`w-16 h-16 ${isConnecting ? 'text-cyan-400 animate-pulse' : 'text-white'}`} />
-              </div>
+        <div className="fixed inset-0 bg-[#020617]/98 backdrop-blur-3xl z-[60] flex items-center justify-center p-8 text-center animate-in fade-in duration-700">
+          <div className="max-w-xs space-y-12">
+            <div className="relative z-10 p-12 bg-slate-900 rounded-[4rem] border border-white/10 shadow-3xl mx-auto inline-block">
+              <Bluetooth className={`w-20 h-20 ${isConnecting ? 'text-cyan-400 animate-pulse' : 'text-white'}`} />
             </div>
-            
-            <div className="space-y-3">
-              <h2 className="text-2xl font-black tracking-tight leading-tight uppercase">Hardware<br/>Disconnected</h2>
-              <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.2em] leading-relaxed">
-                Connect via Bluetooth to start controlling
-              </p>
+            <div className="space-y-4">
+              <h2 className="text-3xl font-black tracking-tighter uppercase leading-none">Offline</h2>
+              <p className="text-[10px] text-slate-500 font-black uppercase tracking-[0.3em]">Connect via Bluetooth to begin</p>
             </div>
-            
             <button 
               onClick={connect} 
               disabled={isConnecting} 
-              className="w-full py-5 bg-white text-black rounded-[2rem] font-black uppercase text-[10px] tracking-[0.2em] shadow-2xl active:scale-95 transition-all disabled:opacity-50"
+              className="w-full py-6 bg-white text-slate-950 rounded-[2.5rem] font-black uppercase text-[11px] tracking-[0.3em] shadow-2xl"
             >
               {isConnecting ? 'Searching...' : 'Scan For Strip'}
             </button>
-            
-            <div className="flex items-center justify-center gap-6 opacity-20 pt-4">
-              <span className="text-[8px] font-black border border-white px-2 py-1 rounded tracking-tighter uppercase">ELK-BLED</span>
-              <span className="text-[8px] font-black border border-white px-2 py-1 rounded tracking-tighter uppercase">Triones</span>
-            </div>
           </div>
         </div>
       )}
-      
-      {/* Spacer for bottom scrolling */}
-      <div className="h-24" />
+      <div className="h-28" />
     </div>
   );
-}
+};
+
+export default App;
