@@ -6,11 +6,60 @@ import {
   Circle, Settings, ChevronDown, ChevronUp
 } from 'lucide-react';
 
-// ─── BLE UUIDs ────────────────────────────────────────────────────────────────
+// ─── BLE CONFIG ───────────────────────────────────────────────────────────────
 const PRIMARY_SERVICE  = '0000ffd5-0000-1000-8000-00805f9b34fb';
 const PRIMARY_CHAR     = '0000ffd9-0000-1000-8000-00805f9b34fb';
 const FALLBACK_SERVICE = '0000ffe5-0000-1000-8000-00805f9b34fb';
 const FALLBACK_CHAR    = '0000ffe9-0000-1000-8000-00805f9b34fb';
+
+// Known LED controller name prefixes — pre-filters scan list for faster discovery
+const BLE_NAME_PREFIXES = [
+  'ELK','LED','Triones','Magic','SP1','MELK','QHM','HM','BLE','iLC',
+  'ZJ','Lamp','Light','Strip','RGB','LEDBLE','RGBW','MagicLight',
+];
+
+const ALL_SERVICES       = [PRIMARY_SERVICE, FALLBACK_SERVICE];
+const SERVICE_MAP        = [
+  { svc: PRIMARY_SERVICE,  chr: PRIMARY_CHAR  },
+  { svc: FALLBACK_SERVICE, chr: FALLBACK_CHAR },
+];
+const LAST_DEVICE_KEY    = 'lumina_last_device_id';
+const GATT_MAX_RETRIES   = 3;
+const GATT_RETRY_MS      = 600;
+const CONNECT_TIMEOUT_MS = 8000;
+
+// ─── BLE HELPERS ──────────────────────────────────────────────────────────────
+
+const withTimeout = (p, ms, msg='Timeout') =>
+  Promise.race([p, new Promise((_,rej) => setTimeout(() => rej(new Error(msg)), ms))]);
+
+async function connectGATT(bleDevice, retries = GATT_MAX_RETRIES) {
+  for (let i = 1; i <= retries; i++) {
+    try { return await withTimeout(bleDevice.gatt.connect(), CONNECT_TIMEOUT_MS, 'GATT timeout'); }
+    catch (err) { if (i === retries) throw err; await new Promise(r => setTimeout(r, GATT_RETRY_MS * i)); }
+  }
+}
+
+async function resolveCharacteristic(server) {
+  for (const { svc, chr } of SERVICE_MAP) {
+    try {
+      const service = await server.getPrimaryService(svc);
+      return await service.getCharacteristic(chr);
+    } catch { /* try next */ }
+  }
+  throw new Error('No matching BLE service on this device.');
+}
+
+function buildRequestOptions() {
+  return {
+    filters: [
+      { services: [PRIMARY_SERVICE]  },
+      { services: [FALLBACK_SERVICE] },
+      ...BLE_NAME_PREFIXES.map(p => ({ namePrefix: p })),
+    ],
+    optionalServices: ALL_SERVICES,
+  };
+}
 
 // ─── PIN SEQUENCES ────────────────────────────────────────────────────────────
 // Maps logical (r,g,b) to the physical wire order your strip expects
@@ -168,8 +217,10 @@ export default function App() {
   const [characteristic, setCharacteristic] = useState(null);
   const [isConnected, setIsConnected]       = useState(false);
   const [isConnecting, setIsConnecting]     = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [bleError, setBleError]             = useState('');
   const [bleSupported]                      = useState(() => !!navigator?.bluetooth);
+  const [connStatus, setConnStatus]         = useState('idle'); // idle | scanning | connecting | connected | lost
   const [drawerOpen, setDrawerOpen]         = useState(false);
 
   // Light
@@ -199,6 +250,9 @@ export default function App() {
   const analyserRef    = useRef(null);
   const rafRef         = useRef(null);
   const micStreamRef   = useRef(null);
+  const deviceRef      = useRef(null);       // for auto-reconnect closure
+  const cmdQueueRef    = useRef(Promise.resolve()); // serialises all BLE writes
+  const reconnTimerRef = useRef(null);
 
   useEffect(() => { charRef.current = characteristic; },   [characteristic]);
   useEffect(() => { brightnessRef.current = brightness; }, [brightness]);
@@ -207,52 +261,143 @@ export default function App() {
 
   // ── BLE ──────────────────────────────────────────────────────────────────
 
+  /** Core connect logic — shared by manual connect and auto-reconnect. */
+  const connectDevice = useCallback(async (bleDevice) => {
+    const server = await connectGATT(bleDevice);
+    const char   = await resolveCharacteristic(server);
+    charRef.current   = char;
+    deviceRef.current = bleDevice;
+    setDevice(bleDevice);
+    setCharacteristic(char);
+    setIsConnected(true);
+    setConnStatus('connected');
+    setBleError('');
+    // Persist device ID for future auto-reconnect
+    try { localStorage.setItem(LAST_DEVICE_KEY, bleDevice.id); } catch {}
+
+    bleDevice.addEventListener('gattserverdisconnected', () => {
+      charRef.current = null;
+      setIsConnected(false);
+      setCharacteristic(null);
+      setConnStatus('lost');
+      stopMic();
+      // Auto-reconnect — retry after 1 s, 3 s, 6 s
+      let attempt = 0;
+      const tryReconnect = async () => {
+        if (!deviceRef.current) return;
+        attempt++;
+        setIsReconnecting(true);
+        try {
+          await connectDevice(deviceRef.current);
+          setIsReconnecting(false);
+        } catch {
+          if (attempt < 3) {
+            reconnTimerRef.current = setTimeout(tryReconnect, 1000 * (attempt * 2));
+          } else {
+            setIsReconnecting(false);
+            setDevice(null);
+            deviceRef.current = null;
+          }
+        }
+      };
+      reconnTimerRef.current = setTimeout(tryReconnect, 1000);
+    });
+  }, []); // eslint-disable-line
+
+  /** Manual scan — uses targeted filters for faster device discovery. */
   const connect = async () => {
     setBleError('');
     setIsConnecting(true);
+    setConnStatus('scanning');
+    if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current);
     try {
-      const bleDevice = await navigator.bluetooth.requestDevice({
-        acceptAllDevices: true,
-        optionalServices: [PRIMARY_SERVICE, FALLBACK_SERVICE],
-      });
-      const server = await bleDevice.gatt.connect();
-      let service, char;
+      let bleDevice;
       try {
-        service = await server.getPrimaryService(PRIMARY_SERVICE);
-        char    = await service.getCharacteristic(PRIMARY_CHAR);
-      } catch {
-        service = await server.getPrimaryService(FALLBACK_SERVICE);
-        char    = await service.getCharacteristic(FALLBACK_CHAR);
+        // Targeted filters: browser only shows matching devices → list is short → user picks fast
+        bleDevice = await navigator.bluetooth.requestDevice(buildRequestOptions());
+      } catch (filterErr) {
+        if (filterErr.name === 'NotFoundError') throw filterErr; // user cancelled
+        // Browser may not support all filters (e.g. older Chrome on some Android) → fall back
+        bleDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ALL_SERVICES,
+        });
       }
-      setDevice(bleDevice);
-      setCharacteristic(char);
-      charRef.current = char;
-      setIsConnected(true);
+      setConnStatus('connecting');
+      await connectDevice(bleDevice);
       setDrawerOpen(false);
-      bleDevice.addEventListener('gattserverdisconnected', () => {
-        setIsConnected(false); setCharacteristic(null);
-        charRef.current = null; setDevice(null); stopMic();
-      });
     } catch (err) {
-      if (err.name !== 'NotFoundError') {
-        if (err.name === 'SecurityError') setBleError('Bluetooth blocked — allow it in browser settings.');
-        else if (err.message?.includes('getPrimaryService')) setBleError('Connected but no matching service. Wrong device?');
-        else setBleError(`Error: ${err.message}`);
+      setConnStatus('idle');
+      if (err.name === 'NotFoundError') {
+        // User dismissed picker — no error shown
+      } else if (err.name === 'SecurityError') {
+        setBleError('Bluetooth blocked — allow it in browser/OS settings.');
+      } else if (err.message?.includes('No matching')) {
+        setBleError('Device connected but no LED service found. Check pin sequence.');
+      } else if (err.message?.includes('timeout')) {
+        setBleError('Connection timed out. Move closer and try again.');
+      } else {
+        setBleError(`Could not connect: ${err.message}`);
       }
-    } finally { setIsConnecting(false); }
+    } finally {
+      setIsConnecting(false);
+    }
   };
 
-  const disconnect = () => { if (device?.gatt?.connected) device.gatt.disconnect(); };
+  /** Try to silently reconnect to the last used device on page load. */
+  useEffect(() => {
+    if (!bleSupported) return;
+    const tryAutoConnect = async () => {
+      try {
+        const devices = await navigator.bluetooth.getDevices?.();
+        if (!devices?.length) return;
+        const lastId = localStorage.getItem(LAST_DEVICE_KEY);
+        const target = lastId ? devices.find(d => d.id === lastId) : devices[0];
+        if (!target) return;
+        setIsReconnecting(true);
+        setConnStatus('connecting');
+        await connectDevice(target);
+        setIsReconnecting(false);
+      } catch {
+        setIsReconnecting(false);
+        setConnStatus('idle');
+      }
+    };
+    // Small delay so React finishes initial render first
+    const t = setTimeout(tryAutoConnect, 800);
+    return () => clearTimeout(t);
+  }, [bleSupported, connectDevice]);
 
-  // ── Command (applies pin sequence remapping) ──────────────────────────────
+  const disconnect = () => {
+    if (reconnTimerRef.current) clearTimeout(reconnTimerRef.current);
+    deviceRef.current = null;
+    setIsReconnecting(false);
+    if (device?.gatt?.connected) device.gatt.disconnect();
+    // Clear persisted ID so we don't auto-reconnect next time
+    try { localStorage.removeItem(LAST_DEVICE_KEY); } catch {}
+  };
 
-  const sendCommand = useCallback(async (r, g, b, mode = 0x00) => {
-    const char = charRef.current;
-    if (!char) return;
-    const f    = brightnessRef.current / 100;
-    const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
-    const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
-    try { await char.writeValue(new Uint8Array([0x56, p1, p2, p3, mode, 0xf0, 0xaa])); } catch {}
+  // ── Command — queued + writeValueWithoutResponse for speed ───────────────
+
+  const sendCommand = useCallback((r, g, b, mode = 0x00) => {
+    // Enqueue: each write waits for the previous one to finish so GATT
+    // never throws "operation already in progress"
+    cmdQueueRef.current = cmdQueueRef.current.then(async () => {
+      const char = charRef.current;
+      if (!char) return;
+      const f = brightnessRef.current / 100;
+      const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
+      const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+      const data = new Uint8Array([0x56, p1, p2, p3, mode, 0xf0, 0xaa]);
+      try {
+        // writeValueWithoutResponse skips ACK round-trip → ~3× faster on most controllers
+        if (char.properties?.writeWithoutResponse) {
+          await char.writeValueWithoutResponse(data);
+        } else {
+          await char.writeValue(data);
+        }
+      } catch { /* swallow GATT busy / disconnected errors */ }
+    });
   }, []);
 
   // ── Color sync ───────────────────────────────────────────────────────────
@@ -402,17 +547,21 @@ export default function App() {
 
           {/* Status */}
           <NeonCard className="p-4"
-            style={{ border: isConnected ? '1px solid rgba(0,255,150,0.2)' : '1px solid rgba(0,255,255,0.08)',
-              background: isConnected ? 'rgba(0,40,25,0.6)' : 'rgba(0,15,35,0.7)' }}>
+            style={{ border: isConnected ? '1px solid rgba(0,255,150,0.2)' : isReconnecting ? '1px solid rgba(255,200,0,0.2)' : '1px solid rgba(0,255,255,0.08)',
+              background: isConnected ? 'rgba(0,40,25,0.6)' : isReconnecting ? 'rgba(30,20,0,0.6)' : 'rgba(0,15,35,0.7)' }}>
             <div className="flex items-center gap-3">
-              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${isConnected ? 'bg-green-400' : 'bg-slate-700'}`}
-                style={isConnected ? { boxShadow:'0 0 10px rgba(74,222,128,0.7)' } : {}}/>
+              <div className={`w-2.5 h-2.5 rounded-full flex-shrink-0 ${
+                isConnected ? 'bg-green-400' : isReconnecting ? 'bg-yellow-400 animate-pulse' : connStatus === 'lost' ? 'bg-red-500' : 'bg-slate-700'
+              }`} style={isConnected ? { boxShadow:'0 0 10px rgba(74,222,128,0.7)' } : isReconnecting ? { boxShadow:'0 0 10px rgba(250,204,21,0.6)' } : {}}/>
               <div className="flex-1 min-w-0">
                 <p className="text-[10px] font-black uppercase tracking-widest text-slate-400">
-                  {isConnected ? 'Connected' : 'Disconnected'}
+                  {isConnected ? 'Connected' : isReconnecting ? 'Reconnecting…' : connStatus === 'scanning' ? 'Scanning…' : connStatus === 'lost' ? 'Signal lost' : 'Disconnected'}
                 </p>
                 {isConnected && device && (
                   <p className="text-xs font-bold text-green-300 truncate mt-0.5">{device.name || 'Unknown Device'}</p>
+                )}
+                {isReconnecting && (
+                  <p className="text-[9px] text-yellow-400 mt-0.5">Attempting to restore connection…</p>
                 )}
               </div>
               {isConnected && (
@@ -434,17 +583,20 @@ export default function App() {
             </div>
           )}
           {bleSupported && (
-            <button onClick={isConnected ? disconnect : connect} disabled={isConnecting}
+            <button onClick={isConnected ? disconnect : connect} disabled={isConnecting || isReconnecting}
               className="w-full py-4 rounded-2xl font-black text-[10px] uppercase tracking-[0.2em] transition-all active:scale-95 disabled:opacity-40 flex items-center justify-center gap-2"
               style={isConnected
                 ? { background:'rgba(255,50,50,0.1)', border:'1px solid rgba(255,50,50,0.3)', color:'#f87171' }
                 : { background:'rgba(0,255,255,0.1)', border:'1px solid rgba(0,255,255,0.3)', color:'#67e8f9',
                     boxShadow:'0 0 20px rgba(0,255,255,0.08)' }}>
               {isConnecting
-                ? <><RefreshCcw className="w-3.5 h-3.5 animate-spin"/>Scanning…</>
-                : isConnected
-                  ? <><BluetoothOff className="w-3.5 h-3.5"/>Disconnect</>
-                  : <><Bluetooth className="w-3.5 h-3.5"/>Scan For Device</>}
+                ? <><RefreshCcw className="w-3.5 h-3.5 animate-spin"/>
+                    {connStatus === 'scanning' ? 'Scanning…' : 'Connecting…'}</>
+                : isReconnecting
+                  ? <><RefreshCcw className="w-3.5 h-3.5 animate-spin"/>Reconnecting…</>
+                  : isConnected
+                    ? <><BluetoothOff className="w-3.5 h-3.5"/>Disconnect</>
+                    : <><Bluetooth className="w-3.5 h-3.5"/>Scan For Device</>}
             </button>
           )}
 
@@ -461,7 +613,10 @@ export default function App() {
             </div>
           </div>
           <div className="mt-auto pt-4 border-t" style={{ borderColor:'rgba(0,255,255,0.06)' }}>
-            <p className="text-[9px] text-slate-700 leading-relaxed">On Android, enable Location permission for BLE scanning. Lumina never collects GPS data.</p>
+            <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color:'rgba(0,255,255,0.3)' }}>Android Users</p>
+            <p className="text-[9px] text-slate-700 leading-relaxed">
+              Enable <strong className="text-slate-500">Location (Nearby Devices)</strong> permission in Android Settings → Apps → Chrome/Edge → Permissions. Required for BLE scanning. Lumina never collects GPS data.
+            </p>
           </div>
         </div>
       </div>
@@ -589,9 +744,13 @@ export default function App() {
             className="px-3 py-2 rounded-full text-xs font-bold flex items-center gap-2 transition-all"
             style={isConnected
               ? { background:'rgba(0,255,150,0.1)', border:'1px solid rgba(0,255,150,0.3)', color:'#4ade80', boxShadow:'0 0 12px rgba(0,255,150,0.08)' }
-              : { background:'rgba(0,255,255,0.08)', border:'1px solid rgba(0,255,255,0.2)', color:'#67e8f9' }}>
-            <Bluetooth className="w-3.5 h-3.5"/>
-            {isConnected ? 'Connected' : 'Connect'}
+              : isReconnecting
+                ? { background:'rgba(255,200,0,0.08)', border:'1px solid rgba(255,200,0,0.25)', color:'#fbbf24' }
+                : { background:'rgba(0,255,255,0.08)', border:'1px solid rgba(0,255,255,0.2)', color:'#67e8f9' }}>
+            {isReconnecting
+              ? <RefreshCcw className="w-3.5 h-3.5 animate-spin"/>
+              : <Bluetooth className="w-3.5 h-3.5"/>}
+            {isConnected ? 'Connected' : isReconnecting ? 'Reconnecting' : 'Connect'}
           </button>
         </div>
       </header>
@@ -804,19 +963,27 @@ export default function App() {
         )}
       </main>
 
-      {/* Bottom bar when disconnected */}
-      {!isConnected && (
+      {/* Bottom bar when disconnected or reconnecting */}
+      {(!isConnected) && (
         <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-30 flex items-center gap-3 px-5 py-3 rounded-full"
-          style={{ background:'rgba(2,0,25,0.97)', border:'1px solid rgba(0,255,255,0.15)',
+          style={{ background:'rgba(2,0,25,0.97)', border:`1px solid ${isReconnecting ? 'rgba(255,200,0,0.2)' : 'rgba(0,255,255,0.15)'}`,
             backdropFilter:'blur(20px)', boxShadow:'0 0 40px rgba(0,100,255,0.15), 0 20px 40px rgba(0,0,0,0.5)' }}>
-          <div className="w-2 h-2 rounded-full bg-slate-600"/>
-          <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">No device</span>
-          <button onClick={() => setDrawerOpen(true)}
-            className="px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 flex items-center gap-2"
-            style={{ background:'rgba(0,255,255,0.12)', border:'1px solid rgba(0,255,255,0.25)', color:'#67e8f9',
-              boxShadow:'0 0 15px rgba(0,255,255,0.1)' }}>
-            <Bluetooth className="w-3 h-3"/> Connect →
-          </button>
+          {isReconnecting
+            ? <>
+                <RefreshCcw className="w-3 h-3 text-yellow-400 animate-spin"/>
+                <span className="text-[10px] font-black uppercase tracking-widest text-yellow-500">Reconnecting…</span>
+              </>
+            : <>
+                <div className="w-2 h-2 rounded-full bg-slate-600"/>
+                <span className="text-[10px] font-black uppercase tracking-widest text-slate-500">No device</span>
+                <button onClick={() => setDrawerOpen(true)}
+                  className="px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest transition-all active:scale-95 flex items-center gap-2"
+                  style={{ background:'rgba(0,255,255,0.12)', border:'1px solid rgba(0,255,255,0.25)', color:'#67e8f9',
+                    boxShadow:'0 0 15px rgba(0,255,255,0.1)' }}>
+                  <Bluetooth className="w-3 h-3"/> Connect →
+                </button>
+              </>
+          }
         </div>
       )}
       <div className="h-24"/>
