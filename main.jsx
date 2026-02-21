@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import ReactDOM from 'react-dom/client';
 import { 
   Bluetooth, 
   BluetoothOff, 
@@ -436,5 +437,18 @@ const App = () => {
     </div>
   );
 };
+
+export default App;
+
+// React Mounting Logic for Vite Entry
+const rootElement = document.getElementById('root');
+if (rootElement) {
+  const root = ReactDOM.createRoot(rootElement);
+  root.render(
+    <React.StrictMode>
+      <App />
+    </React.StrictMode>
+  );
+}
 
 export default App;
