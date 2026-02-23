@@ -53,19 +53,61 @@ const KNOWN_LED_SERVICES = [
 
 // Ordered list of {svc, chr} pairs tried during normal connect
 const SERVICE_MAP = [
-  { svc:'0000ffd5-0000-1000-8000-00805f9b34fb', chr:'0000ffd9-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000ffe5-0000-1000-8000-00805f9b34fb', chr:'0000ffe9-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000ffe0-0000-1000-8000-00805f9b34fb', chr:'0000ffe1-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000ff01-0000-1000-8000-00805f9b34fb', chr:'0000ff02-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff3-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff4-0000-1000-8000-00805f9b34fb' },
-  { svc:'49535343-fe7d-4ae5-8fa9-9fafd205e455', chr:'49535343-1e4d-4bd9-ba61-23c647249616' },
-  { svc:'6e400001-b5a3-f393-e0a9-e50e24dcca9e', chr:'6e400002-b5a3-f393-e0a9-e50e24dcca9e' },
-  { svc:'0000aa00-0000-1000-8000-00805f9b34fb', chr:'0000aa01-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000ae00-0000-1000-8000-00805f9b34fb', chr:'0000ae01-0000-1000-8000-00805f9b34fb' },
-  { svc:'0000be00-0000-1000-8000-00805f9b34fb', chr:'0000be01-0000-1000-8000-00805f9b34fb' },
-  { svc:'00010203-0405-0607-0809-0a0b0c0d1910', chr:'00010203-0405-0607-0809-0a0b0c0d2b12' },
+  // ── 0x56 protocol (ELK-BLED01, Triones, SP110E, ffd5/ffd9) ──
+  { svc:'0000ffd5-0000-1000-8000-00805f9b34fb', chr:'0000ffd9-0000-1000-8000-00805f9b34fb', proto:'0x56' },
+  { svc:'0000ffe5-0000-1000-8000-00805f9b34fb', chr:'0000ffe9-0000-1000-8000-00805f9b34fb', proto:'0x56' },
+  { svc:'0000ffe0-0000-1000-8000-00805f9b34fb', chr:'0000ffe1-0000-1000-8000-00805f9b34fb', proto:'0x56' },
+  { svc:'0000ff01-0000-1000-8000-00805f9b34fb', chr:'0000ff02-0000-1000-8000-00805f9b34fb', proto:'0x56' },
+  // ── 7E protocol (fff0/fff3, fff0/fff4 — most common cheap BLE RGB strips) ──
+  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff3-0000-1000-8000-00805f9b34fb', proto:'7e' },
+  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff4-0000-1000-8000-00805f9b34fb', proto:'7e' },
+  // ── 7E protocol variants ──
+  { svc:'0000aa00-0000-1000-8000-00805f9b34fb', chr:'0000aa01-0000-1000-8000-00805f9b34fb', proto:'7e' },
+  { svc:'0000ae00-0000-1000-8000-00805f9b34fb', chr:'0000ae01-0000-1000-8000-00805f9b34fb', proto:'7e' },
+  { svc:'0000be00-0000-1000-8000-00805f9b34fb', chr:'0000be01-0000-1000-8000-00805f9b34fb', proto:'7e' },
+  // ── UART bridge (NUS / ISSC) ──
+  { svc:'49535343-fe7d-4ae5-8fa9-9fafd205e455', chr:'49535343-1e4d-4bd9-ba61-23c647249616', proto:'7e' },
+  { svc:'6e400001-b5a3-f393-e0a9-e50e24dcca9e', chr:'6e400002-b5a3-f393-e0a9-e50e24dcca9e', proto:'7e' },
+  { svc:'00010203-0405-0607-0809-0a0b0c0d1910', chr:'00010203-0405-0607-0809-0a0b0c0d2b12', proto:'7e' },
 ];
+
+// ─── COMMAND BUILDERS ─────────────────────────────────────────────────────────
+
+/**
+ * 0x56 protocol  — older ELK/Triones/SP110E family
+ *   SET COLOR : 56 RR GG BB 00 F0 AA
+ *   SET MODE  : 56 00 00 00 <mode> F0 AA
+ *   POWER OFF : 56 00 00 00 00 F0 AA  (black = off for this family)
+ */
+function build0x56(r, g, b, mode) {
+  return new Uint8Array([0x56, r, g, b, mode, 0xf0, 0xaa]);
+}
+
+/**
+ * 7E protocol — fff0/fff3 family and most newer cheap BLE strips
+ *   SET COLOR : 7E 07 05 03 RR GG BB 00 EF
+ *   SET MODE  : 7E 05 03 <mode> 03 FF FF 00 EF
+ *   POWER ON  : 7E 04 04 01 FF FF FF 00 EF
+ *   POWER OFF : 7E 04 04 00 FF FF FF 00 EF
+ *   BRIGHTNESS: 7E 04 01 <0-64> FF FF FF 00 EF
+ */
+function build7E(r, g, b, mode) {
+  if (mode !== 0x00) {
+    // FX mode command
+    return new Uint8Array([0x7e, 0x05, 0x03, mode, 0x03, 0xff, 0xff, 0x00, 0xef]);
+  }
+  return new Uint8Array([0x7e, 0x07, 0x05, 0x03, r, g, b, 0x00, 0xef]);
+}
+
+function build7E_power(on) {
+  return new Uint8Array([0x7e, 0x04, 0x04, on ? 0x01 : 0x00, 0xff, 0xff, 0xff, 0x00, 0xef]);
+}
+
+function build7E_brightness(pct) {
+  // 7E brightness range is 0x00–0x64 (0–100)
+  const val = Math.round(Math.min(pct, 100));
+  return new Uint8Array([0x7e, 0x04, 0x01, val, 0xff, 0xff, 0xff, 0x00, 0xef]);
+}
 
 // De-duplicated list of all service UUIDs (needed for optionalServices)
 const ALL_SERVICES = [...new Set([
@@ -98,11 +140,11 @@ async function connectGATT(bleDevice, retries = GATT_MAX_RETRIES) {
 }
 
 async function resolveCharacteristic(server) {
-  for (const { svc, chr } of SERVICE_MAP) {
+  for (const { svc, chr, proto } of SERVICE_MAP) {
     try {
       const service = await server.getPrimaryService(svc);
       const char    = await service.getCharacteristic(chr);
-      return char;
+      return { char, proto };
     } catch { /* try next */ }
   }
   // Last resort: ask for ALL declared services and return first writable char
@@ -111,7 +153,7 @@ async function resolveCharacteristic(server) {
     for (const svc of services) {
       const chars = await svc.getCharacteristics();
       const writable = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
-      if (writable) return writable;
+      if (writable) return { char: writable, proto: '7e' }; // assume 7e for unknown
     }
   } catch {}
   throw new Error('NO_SERVICE');
@@ -308,6 +350,9 @@ export default function App() {
   // Power
   const [isPoweredOn, setIsPoweredOn]   = useState(true);
 
+  // Protocol detected from connected service ('0x56' | '7e' | 'auto')
+  const [protocol, setProtocol]         = useState('auto');
+
   // Scheduler
   const [schedules, setSchedules]       = useState([]);
   const [schedInput, setSchedInput]     = useState({ onTime:'18:00', offTime:'23:00', days:[1,2,3,4,5] });
@@ -327,11 +372,13 @@ export default function App() {
   const reconnTimerRef = useRef(null);
   const customCharRef  = useRef(null);       // user-picked char from diagnostic scan
   const diagServerRef  = useRef(null);       // GATT server kept open during diag
+  const protocolRef    = useRef('auto');     // tracks active protocol without stale closure
 
   useEffect(() => { charRef.current = characteristic; },   [characteristic]);
   useEffect(() => { brightnessRef.current = brightness; }, [brightness]);
   useEffect(() => { colorRef.current = color; },           [color]);
   useEffect(() => { pinSeqRef.current = pinSeq; },         [pinSeq]);
+  useEffect(() => { protocolRef.current = protocol; },     [protocol]);
 
   // ── BLE ──────────────────────────────────────────────────────────────────
 
@@ -349,7 +396,13 @@ export default function App() {
       } catch { char = null; }
     }
     // Fall back to known service map
-    if (!char) char = await resolveCharacteristic(server);
+    if (!char) {
+      const resolved = await resolveCharacteristic(server);
+      char = resolved.char;
+      const detectedProto = resolved.proto;
+      protocolRef.current = detectedProto;
+      setProtocol(detectedProto);
+    }
 
     charRef.current   = char;
     deviceRef.current = bleDevice;
@@ -554,52 +607,98 @@ export default function App() {
     } catch {}
   };
 
-  // ── Command — queued + writeValueWithoutResponse for speed ───────────────
+  // ── Command — routes through correct protocol, queued ────────────────────
+
+  const writeRaw = useCallback(async (data) => {
+    const char = charRef.current;
+    if (!char) return;
+    try {
+      if (char.properties?.writeWithoutResponse) {
+        await char.writeValueWithoutResponse(data);
+      } else {
+        await char.writeValue(data);
+      }
+    } catch { /* swallow GATT busy */ }
+  }, []);
 
   const sendCommand = useCallback((r, g, b, mode = 0x00) => {
-    // Enqueue: each write waits for the previous one to finish so GATT
-    // never throws "operation already in progress"
     cmdQueueRef.current = cmdQueueRef.current.then(async () => {
       const char = charRef.current;
       if (!char) return;
-      const f = brightnessRef.current / 100;
+
+      const proto = protocolRef.current;
       const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
-      const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
-      const data = new Uint8Array([0x56, p1, p2, p3, mode, 0xf0, 0xaa]);
+
+      let data;
+      if (proto === '7e') {
+        // 7E protocol — brightness is a separate command; color bytes are raw (not scaled)
+        const [p1, p2, p3] = remap(r, g, b);
+        data = build7E(p1, p2, p3, mode);
+      } else {
+        // 0x56 protocol — brightness is baked into the RGB values
+        const f = brightnessRef.current / 100;
+        const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+        data = build0x56(p1, p2, p3, mode);
+      }
+
       try {
-        // writeValueWithoutResponse skips ACK round-trip → ~3× faster on most controllers
         if (char.properties?.writeWithoutResponse) {
           await char.writeValueWithoutResponse(data);
         } else {
           await char.writeValue(data);
         }
-      } catch { /* swallow GATT busy / disconnected errors */ }
+      } catch { /* swallow GATT busy / disconnected */ }
     });
   }, []);
+
+  // For 7E devices, push a brightness packet whenever the slider moves
+  const sendBrightness7E = useCallback((pct) => {
+    if (protocolRef.current !== '7e') return;
+    cmdQueueRef.current = cmdQueueRef.current.then(() => writeRaw(build7E_brightness(pct)));
+  }, [writeRaw]);
 
   // ── Color sync ───────────────────────────────────────────────────────────
 
   useEffect(() => {
     if (!isConnected || isMicActive || activeTab === 'fx' || !isPoweredOn) return;
-    const t = setTimeout(() => sendCommand(color.r, color.g, color.b), 50);
+    const t = setTimeout(() => {
+      // For 7E devices send brightness first, then color
+      if (protocolRef.current === '7e') sendBrightness7E(brightness);
+      sendCommand(color.r, color.g, color.b);
+    }, 50);
     return () => clearTimeout(t);
-  }, [color, brightness, isConnected, isMicActive, activeTab, isPoweredOn, sendCommand]);
+  }, [color, brightness, isConnected, isMicActive, activeTab, isPoweredOn, sendCommand, sendBrightness7E]);
 
   // ── Power on / off ───────────────────────────────────────────────────────
 
   const togglePower = useCallback(() => {
     if (!isConnected) return;
+    const proto = protocolRef.current;
     if (isPoweredOn) {
-      // Turn off: send black
-      sendCommand(0, 0, 0);
       setIsPoweredOn(false);
       stopMic();
+      if (proto === '7e') {
+        // 7E has a real power-off command
+        cmdQueueRef.current = cmdQueueRef.current.then(() => writeRaw(build7E_power(false)));
+      } else {
+        sendCommand(0, 0, 0);
+      }
     } else {
-      // Turn on: restore current color
-      sendCommand(color.r, color.g, color.b);
       setIsPoweredOn(true);
+      if (proto === '7e') {
+        // 7E: power on then restore brightness + color
+        cmdQueueRef.current = cmdQueueRef.current
+          .then(() => writeRaw(build7E_power(true)))
+          .then(() => writeRaw(build7E_brightness(brightnessRef.current)))
+          .then(() => {
+            const { r, g, b } = colorRef.current;
+            return writeRaw(build7E(r, g, b, 0x00));
+          });
+      } else {
+        sendCommand(colorRef.current.r, colorRef.current.g, colorRef.current.b);
+      }
     }
-  }, [isPoweredOn, isConnected, color, sendCommand]);
+  }, [isPoweredOn, isConnected, sendCommand, writeRaw]);
 
   // ── FX mode select ───────────────────────────────────────────────────────
 
@@ -1004,6 +1103,36 @@ export default function App() {
               ))}
             </div>
           </NeonCard>
+
+          {/* Protocol override */}
+          <div className="rounded-2xl overflow-hidden" style={{ border:'1px solid rgba(255,180,0,0.15)' }}>
+            <div className="px-4 py-3" style={{ background:'rgba(30,15,0,0.7)' }}>
+              <p className="text-[9px] font-black uppercase tracking-widest" style={{ color:'rgba(255,180,0,0.8)' }}>
+                Command Protocol
+              </p>
+              <p className="text-[8px] text-slate-600 mt-0.5">
+                Auto-detected: <span className="font-black" style={{ color: protocol === '7e' ? '#fbbf24' : '#34d399' }}>
+                  {protocol === 'auto' ? 'not connected' : protocol === '7e' ? '7E (your device)' : '0x56'}
+                </span>
+              </p>
+            </div>
+            <div className="p-3 grid grid-cols-2 gap-2" style={{ background:'rgba(10,5,0,0.5)' }}>
+              {[
+                { id:'auto', label:'Auto',  desc:'Let app decide' },
+                { id:'7e',   label:'7E',    desc:'fff0/fff3 strips' },
+                { id:'0x56', label:'0x56',  desc:'ffd5/ffe5 strips' },
+              ].map(p => (
+                <button key={p.id} onClick={() => { setProtocol(p.id); protocolRef.current = p.id; }}
+                  className="p-2.5 rounded-xl text-left transition-all active:scale-95"
+                  style={protocol === p.id
+                    ? { background:'rgba(255,180,0,0.15)', border:'1px solid rgba(255,180,0,0.4)', boxShadow:'0 0 10px rgba(255,180,0,0.1)' }
+                    : { background:'rgba(0,0,0,0.3)', border:'1px solid rgba(255,180,0,0.07)' }}>
+                  <p className="text-[10px] font-black" style={{ color: protocol === p.id ? '#fbbf24' : '#64748b' }}>{p.label}</p>
+                  <p className="text-[8px] mt-0.5" style={{ color:'rgba(100,116,139,0.7)' }}>{p.desc}</p>
+                </button>
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1027,6 +1156,18 @@ export default function App() {
             <Settings className="w-3 h-3"/>
             <span className="text-[9px] font-black">{pinSeq}</span>
           </button>
+
+          {/* Protocol badge — only show when connected */}
+          {isConnected && (
+            <div className="px-2 py-1 rounded-lg"
+              style={{ background: protocol === '7e' ? 'rgba(255,180,0,0.08)' : 'rgba(0,255,200,0.06)',
+                border: protocol === '7e' ? '1px solid rgba(255,180,0,0.2)' : '1px solid rgba(0,255,200,0.15)' }}>
+              <span className="text-[8px] font-black uppercase tracking-widest"
+                style={{ color: protocol === '7e' ? '#fbbf24' : '#34d399' }}>
+                {protocol === '7e' ? '7E' : '56'}
+              </span>
+            </div>
+          )}
 
           {/* Mic toggle */}
           <button onClick={toggleMic} disabled={!isConnected} title={isMicActive ? 'Stop mic sync' : 'Start mic sync'}
