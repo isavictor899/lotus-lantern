@@ -305,6 +305,9 @@ export default function App() {
   // Mic
   const [isMicActive, setIsMicActive]   = useState(false);
 
+  // Power
+  const [isPoweredOn, setIsPoweredOn]   = useState(true);
+
   // Scheduler
   const [schedules, setSchedules]       = useState([]);
   const [schedInput, setSchedInput]     = useState({ onTime:'18:00', offTime:'23:00', days:[1,2,3,4,5] });
@@ -355,6 +358,7 @@ export default function App() {
     setIsConnected(true);
     setConnStatus('connected');
     setBleError('');
+    setIsPoweredOn(true);
     // Persist device ID for future auto-reconnect
     try { localStorage.setItem(LAST_DEVICE_KEY, bleDevice.id); } catch {}
 
@@ -576,10 +580,26 @@ export default function App() {
   // ── Color sync ───────────────────────────────────────────────────────────
 
   useEffect(() => {
-    if (!isConnected || isMicActive || activeTab === 'fx') return;
+    if (!isConnected || isMicActive || activeTab === 'fx' || !isPoweredOn) return;
     const t = setTimeout(() => sendCommand(color.r, color.g, color.b), 50);
     return () => clearTimeout(t);
-  }, [color, brightness, isConnected, isMicActive, activeTab, sendCommand]);
+  }, [color, brightness, isConnected, isMicActive, activeTab, isPoweredOn, sendCommand]);
+
+  // ── Power on / off ───────────────────────────────────────────────────────
+
+  const togglePower = useCallback(() => {
+    if (!isConnected) return;
+    if (isPoweredOn) {
+      // Turn off: send black
+      sendCommand(0, 0, 0);
+      setIsPoweredOn(false);
+      stopMic();
+    } else {
+      // Turn on: restore current color
+      sendCommand(color.r, color.g, color.b);
+      setIsPoweredOn(true);
+    }
+  }, [isPoweredOn, isConnected, color, sendCommand]);
 
   // ── FX mode select ───────────────────────────────────────────────────────
 
@@ -1050,22 +1070,57 @@ export default function App() {
           </div>
         )}
 
-        {/* Brightness */}
-        <NeonCard className="p-5 space-y-3">
-          <div className="flex justify-between items-center">
-            <div className="flex items-center gap-2">
-              <Sun className="w-3.5 h-3.5 text-yellow-400"/>
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Brightness</span>
+        {/* Power + Brightness */}
+        <NeonCard className="p-5 space-y-4"
+          style={isPoweredOn
+            ? { border:'1px solid rgba(0,255,255,0.08)' }
+            : { border:'1px solid rgba(255,50,50,0.15)', background:'rgba(20,0,0,0.5)' }}>
+          <div className="flex items-center justify-between">
+            {/* Power button */}
+            <button
+              onClick={togglePower}
+              disabled={!isConnected}
+              className="flex items-center gap-3 transition-all active:scale-95 disabled:opacity-30"
+            >
+              <div className="w-12 h-12 rounded-2xl flex items-center justify-center transition-all"
+                style={isPoweredOn
+                  ? { background:'rgba(0,255,150,0.12)', border:'1px solid rgba(0,255,150,0.4)',
+                      boxShadow:'0 0 20px rgba(0,255,150,0.2), inset 0 0 10px rgba(0,255,150,0.05)' }
+                  : { background:'rgba(255,50,50,0.1)', border:'1px solid rgba(255,50,50,0.35)',
+                      boxShadow:'0 0 20px rgba(255,50,50,0.15)' }}>
+                <Power className={`w-5 h-5 ${isPoweredOn ? 'text-green-400' : 'text-red-400'}`}/>
+              </div>
+              <div className="text-left">
+                <p className="text-xs font-black uppercase tracking-widest"
+                  style={{ color: isPoweredOn ? '#4ade80' : '#f87171' }}>
+                  {isPoweredOn ? 'On' : 'Off'}
+                </p>
+                <p className="text-[9px] text-slate-600 uppercase tracking-widest mt-0.5">
+                  {isPoweredOn ? 'Tap to turn off' : 'Tap to turn on'}
+                </p>
+              </div>
+            </button>
+
+            {/* Brightness value */}
+            <div className="flex flex-col items-end gap-1">
+              <div className="flex items-center gap-1.5">
+                <Sun className="w-3.5 h-3.5 text-yellow-400"/>
+                <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Brightness</span>
+              </div>
+              <span className="text-[10px] font-mono px-2 py-0.5 rounded-lg text-cyan-300"
+                style={{ background:'rgba(0,255,255,0.06)', border:'1px solid rgba(0,255,255,0.1)' }}>
+                {brightness}%
+              </span>
             </div>
-            <span className="text-[10px] font-mono px-2 py-0.5 rounded-lg text-cyan-300"
-              style={{ background:'rgba(0,255,255,0.06)', border:'1px solid rgba(0,255,255,0.1)' }}>
-              {brightness}%
-            </span>
           </div>
-          <input type="range" min="1" max="100" value={brightness}
-            onChange={e => setBrightness(parseInt(e.target.value))}
-            className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
-            style={{ accentColor:'#22d3ee', background:'rgba(0,255,255,0.08)' }}/>
+
+          {/* Brightness slider — dimmed when off */}
+          <div style={{ opacity: isPoweredOn ? 1 : 0.3, transition:'opacity 0.3s', pointerEvents: isPoweredOn ? 'auto' : 'none' }}>
+            <input type="range" min="1" max="100" value={brightness}
+              onChange={e => setBrightness(parseInt(e.target.value))}
+              className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+              style={{ accentColor:'#22d3ee', background:'rgba(0,255,255,0.08)' }}/>
+          </div>
         </NeonCard>
 
         {/* Tabs */}
