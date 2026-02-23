@@ -18,11 +18,23 @@ const BLE_NAME_PREFIXES = [
   'ZJ','Lamp','Light','Strip','RGB','LEDBLE','RGBW','MagicLight',
 ];
 
-const ALL_SERVICES       = [PRIMARY_SERVICE, FALLBACK_SERVICE];
-const SERVICE_MAP        = [
-  { svc: PRIMARY_SERVICE,  chr: PRIMARY_CHAR  },
-  { svc: FALLBACK_SERVICE, chr: FALLBACK_CHAR },
+// Extended service map — tried in order until one works
+const SERVICE_MAP = [
+  // Most common generic RGB BLE controllers (ELK-BLED01, Triones, SP110E)
+  { svc: '0000ffd5-0000-1000-8000-00805f9b34fb', chr: '0000ffd9-0000-1000-8000-00805f9b34fb' },
+  // Magic Home / second-gen controllers
+  { svc: '0000ffe5-0000-1000-8000-00805f9b34fb', chr: '0000ffe9-0000-1000-8000-00805f9b34fb' },
+  // HM-10 UART bridge (many cheap modules)
+  { svc: '0000ffe0-0000-1000-8000-00805f9b34fb', chr: '0000ffe1-0000-1000-8000-00805f9b34fb' },
+  // Some ZJ / QHM variants
+  { svc: '0000ff01-0000-1000-8000-00805f9b34fb', chr: '0000ff02-0000-1000-8000-00805f9b34fb' },
+  // ISSC UART (some SP110E firmware)
+  { svc: '49535343-fe7d-4ae5-8fa9-9fafd205e455', chr: '49535343-1e4d-4bd9-ba61-23c647249616' },
+  // Nordic UART Service (NUS) fallback
+  { svc: '6e400001-b5a3-f393-e0a9-e50e24dcca9e', chr: '6e400002-b5a3-f393-e0a9-e50e24dcca9e' },
 ];
+
+const ALL_SERVICES = [...new Set(SERVICE_MAP.map(s => s.svc))];
 const LAST_DEVICE_KEY    = 'lumina_last_device_id';
 const GATT_MAX_RETRIES   = 3;
 const GATT_RETRY_MS      = 600;
@@ -53,8 +65,9 @@ async function resolveCharacteristic(server) {
 function buildRequestOptions() {
   return {
     filters: [
-      { services: [PRIMARY_SERVICE]  },
-      { services: [FALLBACK_SERVICE] },
+      // Match by any of our known service UUIDs — fastest possible discovery
+      ...ALL_SERVICES.map(s => ({ services: [s] })),
+      // Also match by common name prefixes as a fallback
       ...BLE_NAME_PREFIXES.map(p => ({ namePrefix: p })),
     ],
     optionalServices: ALL_SERVICES,
@@ -229,8 +242,8 @@ export default function App() {
   const [activeTab, setActiveTab]       = useState('static');
   const [activeDynamic, setActiveDynamic] = useState(null);
 
-  // Pin sequence
-  const [pinSeq, setPinSeq]             = useState('RGB');
+  // Pin sequence — default GRB for +,G,R,B wired strips
+  const [pinSeq, setPinSeq]             = useState('GRB');
   const [pinDrawerOpen, setPinDrawerOpen] = useState(false);
 
   // Mic
@@ -333,9 +346,11 @@ export default function App() {
       } else if (err.name === 'SecurityError') {
         setBleError('Bluetooth blocked — allow it in browser/OS settings.');
       } else if (err.message?.includes('No matching')) {
-        setBleError('Device connected but no LED service found. Check pin sequence.');
-      } else if (err.message?.includes('timeout')) {
+        setBleError('Connected but no matching service UUID. Your device may use a non-standard protocol. Try power-cycling the strip and reconnecting.');
+      } else if (err.message?.includes('timeout') || err.message?.includes('GATT timeout')) {
         setBleError('Connection timed out. Move closer and try again.');
+      } else if (err.message?.includes('GATT')) {
+        setBleError('GATT error — power cycle your LED strip and try again.');
       } else {
         setBleError(`Could not connect: ${err.message}`);
       }
