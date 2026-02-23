@@ -235,6 +235,10 @@ export default function App() {
   const [bleSupported]                      = useState(() => !!navigator?.bluetooth);
   const [connStatus, setConnStatus]         = useState('idle'); // idle | scanning | connecting | connected | lost
   const [drawerOpen, setDrawerOpen]         = useState(false);
+  const [diagMode, setDiagMode]             = useState(false);   // diagnostic scan mode
+  const [diagServices, setDiagServices]     = useState([]);      // [{svcUuid, chars:[{uuid, props}]}]
+  const [diagScanning, setDiagScanning]     = useState(false);
+  const [customChar, setCustomChar]         = useState(null);    // user-selected characteristic from diag
 
   // Light
   const [color, setColor]               = useState({ r:0, g:200, b:255 });
@@ -266,6 +270,8 @@ export default function App() {
   const deviceRef      = useRef(null);       // for auto-reconnect closure
   const cmdQueueRef    = useRef(Promise.resolve()); // serialises all BLE writes
   const reconnTimerRef = useRef(null);
+  const customCharRef  = useRef(null);       // user-picked char from diagnostic scan
+  const diagServerRef  = useRef(null);       // GATT server kept open during diag
 
   useEffect(() => { charRef.current = characteristic; },   [characteristic]);
   useEffect(() => { brightnessRef.current = brightness; }, [brightness]);
@@ -277,7 +283,19 @@ export default function App() {
   /** Core connect logic — shared by manual connect and auto-reconnect. */
   const connectDevice = useCallback(async (bleDevice) => {
     const server = await connectGATT(bleDevice);
-    const char   = await resolveCharacteristic(server);
+    diagServerRef.current = server;
+
+    // If user already picked a characteristic via diagnostic scan, re-resolve it
+    let char;
+    if (customCharRef.current) {
+      try {
+        const svc = await server.getPrimaryService(customCharRef.current.serviceUuid);
+        char = await svc.getCharacteristic(customCharRef.current.uuid);
+      } catch { char = null; }
+    }
+    // Fall back to known service map
+    if (!char) char = await resolveCharacteristic(server);
+
     charRef.current   = char;
     deviceRef.current = bleDevice;
     setDevice(bleDevice);
@@ -362,6 +380,12 @@ export default function App() {
   /** Try to silently reconnect to the last used device on page load. */
   useEffect(() => {
     if (!bleSupported) return;
+    // Restore custom char if user previously picked one via diagnostic
+    try {
+      const svc = localStorage.getItem('lumina_custom_svc');
+      const chr = localStorage.getItem('lumina_custom_chr');
+      if (svc && chr) customCharRef.current = { serviceUuid: svc, uuid: chr };
+    } catch {}
     const tryAutoConnect = async () => {
       try {
         const devices = await navigator.bluetooth.getDevices?.();
@@ -390,6 +414,85 @@ export default function App() {
     if (device?.gatt?.connected) device.gatt.disconnect();
     // Clear persisted ID so we don't auto-reconnect next time
     try { localStorage.removeItem(LAST_DEVICE_KEY); } catch {}
+  };
+
+  // ── Diagnostic scan — discover ALL services/characteristics ──────────────
+
+  /** Scans the device and lists every service + characteristic it exposes. */
+  const runDiagnostic = async () => {
+    setDiagScanning(true);
+    setDiagServices([]);
+    setBleError('');
+    try {
+      let bleDevice;
+      try {
+        bleDevice = await navigator.bluetooth.requestDevice({
+          acceptAllDevices: true,
+          optionalServices: ALL_SERVICES,
+        });
+      } catch (e) {
+        if (e.name === 'NotFoundError') { setDiagScanning(false); return; }
+        throw e;
+      }
+
+      // Connect with no optionalServices declared — then call getPrimaryServices()
+      // which returns everything the device advertises
+      const server   = await connectGATT(bleDevice);
+      diagServerRef.current = server;
+      deviceRef.current     = bleDevice;
+      setDevice(bleDevice);
+
+      let allServices = [];
+      try { allServices = await server.getPrimaryServices(); } catch {}
+
+      const result = [];
+      for (const svc of allServices) {
+        let chars = [];
+        try { chars = await svc.getCharacteristics(); } catch {}
+        const charInfos = chars.map(c => ({
+          uuid:  c.uuid,
+          props: Object.entries(c.properties)
+                   .filter(([,v]) => v)
+                   .map(([k]) => k)
+                   .join(', '),
+          writable: c.properties.write || c.properties.writeWithoutResponse,
+          charObj: c,
+        }));
+        result.push({ svcUuid: svc.uuid, chars: charInfos });
+      }
+
+      setDiagServices(result);
+      setDiagMode(true);
+      setDiagScanning(false);
+
+      // Listen for disconnect
+      bleDevice.addEventListener('gattserverdisconnected', () => {
+        setIsConnected(false); charRef.current = null;
+      });
+
+    } catch (err) {
+      setDiagScanning(false);
+      setBleError(`Scan failed: ${err.message}`);
+    }
+  };
+
+  /** User taps a characteristic — use it as the write target. */
+  const selectCustomChar = (svcUuid, charInfo) => {
+    customCharRef.current = { serviceUuid: svcUuid, uuid: charInfo.uuid };
+    charRef.current = charInfo.charObj;
+    setCustomChar({ svcUuid, uuid: charInfo.uuid });
+    setCharacteristic(charInfo.charObj);
+    setIsConnected(true);
+    setConnStatus('connected');
+    setBleError('');
+    setDiagMode(false);
+    setDrawerOpen(false);
+    // Persist
+    try {
+      localStorage.setItem(LAST_DEVICE_KEY, device?.id || '');
+      localStorage.setItem('lumina_custom_svc', svcUuid);
+      localStorage.setItem('lumina_custom_chr', charInfo.uuid);
+    } catch {}
   };
 
   // ── Command — queued + writeValueWithoutResponse for speed ───────────────
@@ -626,6 +729,88 @@ export default function App() {
                 </span>
               ))}
             </div>
+          </div>
+
+          {/* ── Diagnostic Scanner ── */}
+          <div className="rounded-2xl overflow-hidden" style={{ border:'1px solid rgba(255,150,0,0.15)' }}>
+            <button onClick={() => setDiagMode(o => !o)}
+              className="w-full flex items-center justify-between px-4 py-3 transition-all"
+              style={{ background: diagMode ? 'rgba(40,20,0,0.8)' : 'rgba(20,10,0,0.5)' }}>
+              <div className="flex items-center gap-2">
+                <div className="w-2 h-2 rounded-full" style={{ background:'rgba(255,150,0,0.8)', boxShadow:'0 0 6px rgba(255,150,0,0.5)' }}/>
+                <span className="text-[10px] font-black uppercase tracking-widest" style={{ color:'rgba(255,180,50,0.8)' }}>
+                  Device Diagnostic
+                </span>
+              </div>
+              {diagMode ? <ChevronUp className="w-3.5 h-3.5 text-orange-500"/> : <ChevronDown className="w-3.5 h-3.5 text-orange-500"/>}
+            </button>
+
+            {diagMode && (
+              <div className="p-4 space-y-3" style={{ background:'rgba(10,5,0,0.6)' }}>
+                <p className="text-[9px] text-orange-300/60 leading-relaxed">
+                  If "no service found" — use this to discover your device's real UUIDs. Tap any <span className="text-green-400">writable</span> characteristic to use it.
+                </p>
+
+                {customChar && (
+                  <div className="p-3 rounded-xl" style={{ background:'rgba(0,255,100,0.06)', border:'1px solid rgba(0,255,100,0.2)' }}>
+                    <p className="text-[9px] font-black uppercase tracking-widest text-green-400 mb-1">Custom char active</p>
+                    <p className="text-[8px] font-mono text-green-300 break-all">{customChar.uuid}</p>
+                    <button onClick={() => { setCustomChar(null); customCharRef.current = null; try { localStorage.removeItem('lumina_custom_svc'); localStorage.removeItem('lumina_custom_chr'); } catch {} }}
+                      className="mt-2 text-[8px] font-black uppercase text-red-400 hover:text-red-300 transition-colors">
+                      Clear custom char
+                    </button>
+                  </div>
+                )}
+
+                <button onClick={runDiagnostic} disabled={diagScanning}
+                  className="w-full py-3 rounded-xl font-black text-[10px] uppercase tracking-widest transition-all active:scale-95 disabled:opacity-40 flex items-center justify-center gap-2"
+                  style={{ background:'rgba(255,150,0,0.1)', border:'1px solid rgba(255,150,0,0.3)', color:'#fb923c' }}>
+                  {diagScanning
+                    ? <><RefreshCcw className="w-3 h-3 animate-spin"/>Scanning…</>
+                    : <>Scan All Services</>}
+                </button>
+
+                {diagServices.length > 0 && (
+                  <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                    {diagServices.map((svc, si) => (
+                      <div key={si} className="rounded-xl overflow-hidden" style={{ border:'1px solid rgba(255,150,0,0.1)' }}>
+                        <div className="px-3 py-2" style={{ background:'rgba(30,15,0,0.8)' }}>
+                          <p className="text-[8px] font-black uppercase text-orange-400 tracking-wider">Service</p>
+                          <p className="text-[9px] font-mono text-orange-200/70 break-all mt-0.5">{svc.svcUuid}</p>
+                        </div>
+                        <div className="divide-y" style={{ borderColor:'rgba(255,150,0,0.06)' }}>
+                          {svc.chars.map((c, ci) => (
+                            <button key={ci} onClick={() => c.writable && selectCustomChar(svc.svcUuid, c)}
+                              className="w-full px-3 py-2.5 text-left transition-all"
+                              style={c.writable
+                                ? { background:'rgba(0,0,0,0)', cursor:'pointer' }
+                                : { background:'rgba(0,0,0,0)', cursor:'default', opacity:0.4 }}>
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="flex-1 min-w-0">
+                                  <p className="text-[8px] font-mono break-all"
+                                    style={{ color: c.writable ? '#86efac' : '#64748b' }}>
+                                    {c.uuid}
+                                  </p>
+                                  <p className="text-[7px] mt-0.5" style={{ color: c.writable ? 'rgba(134,239,172,0.6)' : 'rgba(100,116,139,0.5)' }}>
+                                    {c.props || 'no properties'}
+                                  </p>
+                                </div>
+                                {c.writable && (
+                                  <span className="text-[7px] font-black uppercase px-1.5 py-0.5 rounded flex-shrink-0 mt-0.5"
+                                    style={{ background:'rgba(0,255,100,0.1)', border:'1px solid rgba(0,255,100,0.2)', color:'#4ade80' }}>
+                                    USE
+                                  </span>
+                                )}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
           </div>
           <div className="mt-auto pt-4 border-t" style={{ borderColor:'rgba(0,255,255,0.06)' }}>
             <p className="text-[9px] font-black uppercase tracking-widest mb-2" style={{ color:'rgba(0,255,255,0.3)' }}>Android Users</p>
