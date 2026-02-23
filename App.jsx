@@ -85,7 +85,7 @@ function build0x56(r, g, b, mode) {
 
 /**
  * 7E protocol — fff0/fff3 family and most newer cheap BLE strips
- *   SET COLOR : 7E 07 05 03 RR GG BB 00 EF
+ *   SET COLOR : 7E 07 05 03 RR GG BB 10 EF
  *   SET MODE  : 7E 05 03 <mode> 03 FF FF 00 EF
  *   POWER ON  : 7E 04 04 01 FF FF FF 00 EF
  *   POWER OFF : 7E 04 04 00 FF FF FF 00 EF
@@ -93,10 +93,10 @@ function build0x56(r, g, b, mode) {
  */
 function build7E(r, g, b, mode) {
   if (mode !== 0x00) {
-    // FX mode command
     return new Uint8Array([0x7e, 0x05, 0x03, mode, 0x03, 0xff, 0xff, 0x00, 0xef]);
   }
-  return new Uint8Array([0x7e, 0x07, 0x05, 0x03, r, g, b, 0x00, 0xef]);
+  // NOTE: trailing byte must be 0x10 not 0x00 for fff3 devices
+  return new Uint8Array([0x7e, 0x07, 0x05, 0x03, r, g, b, 0x10, 0xef]);
 }
 
 function build7E_power(on) {
@@ -104,9 +104,28 @@ function build7E_power(on) {
 }
 
 function build7E_brightness(pct) {
-  // 7E brightness range is 0x00–0x64 (0–100)
-  const val = Math.round(Math.min(pct, 100));
+  const val = Math.max(0, Math.min(100, Math.round(pct)));
   return new Uint8Array([0x7e, 0x04, 0x01, val, 0xff, 0xff, 0xff, 0x00, 0xef]);
+}
+
+// Maps a characteristic UUID → which protocol to use
+// This is the ground truth — used even when the service map is bypassed
+const CHAR_UUID_PROTO_MAP = {
+  '0000fff3-0000-1000-8000-00805f9b34fb': '7e',
+  '0000fff4-0000-1000-8000-00805f9b34fb': '7e',
+  '0000ffe1-0000-1000-8000-00805f9b34fb': '7e',
+  '0000ffe9-0000-1000-8000-00805f9b34fb': '0x56',
+  '0000ffd9-0000-1000-8000-00805f9b34fb': '0x56',
+  '0000ff02-0000-1000-8000-00805f9b34fb': '0x56',
+  '0000aa01-0000-1000-8000-00805f9b34fb': '7e',
+  '0000ae01-0000-1000-8000-00805f9b34fb': '7e',
+  '0000be01-0000-1000-8000-00805f9b34fb': '7e',
+  '49535343-1e4d-4bd9-ba61-23c647249616': '7e',
+  '6e400002-b5a3-f393-e0a9-e50e24dcca9e': '7e',
+};
+
+function protoFromCharUUID(uuid) {
+  return CHAR_UUID_PROTO_MAP[uuid?.toLowerCase()] ?? '7e'; // default to 7e for unknowns
 }
 
 // De-duplicated list of all service UUIDs (needed for optionalServices)
@@ -180,75 +199,80 @@ const PIN_SEQUENCES = {
 };
 
 // ─── LIGHTING MODES ───────────────────────────────────────────────────────────
+// Each mode carries BOTH protocol codes:
+//   code56 = 0x56 protocol (ffd5/ffe5 family)
+//   code7e  = 7E  protocol (fff0/fff3 family — your device)
+// sendCommand picks the right one automatically.
 const MODE_GROUPS = [
   {
     label: 'Static Colors',
     color: 'rgba(0,255,255,0.6)',
     modes: [
-      { id:'static_red',     name:'Static Red',     code:null, staticColor:{r:255,g:0,b:0}    },
-      { id:'static_green',   name:'Static Green',   code:null, staticColor:{r:0,g:255,b:0}    },
-      { id:'static_blue',    name:'Static Blue',    code:null, staticColor:{r:0,g:0,b:255}     },
-      { id:'static_white',   name:'Static White',   code:null, staticColor:{r:255,g:255,b:255} },
-      { id:'static_yellow',  name:'Static Yellow',  code:null, staticColor:{r:255,g:255,b:0}   },
-      { id:'static_cyan',    name:'Static Cyan',    code:null, staticColor:{r:0,g:255,b:255}   },
-      { id:'static_purple',  name:'Static Purple',  code:null, staticColor:{r:160,g:32,b:240}  },
-      { id:'static_orange',  name:'Static Orange',  code:null, staticColor:{r:255,g:100,b:0}   },
-      { id:'static_pink',    name:'Static Pink',    code:null, staticColor:{r:255,g:20,b:147}  },
+      { id:'static_red',    name:'Static Red',    staticColor:{r:255,g:0,  b:0}   },
+      { id:'static_green',  name:'Static Green',  staticColor:{r:0,  g:255,b:0}   },
+      { id:'static_blue',   name:'Static Blue',   staticColor:{r:0,  g:0,  b:255} },
+      { id:'static_white',  name:'Static White',  staticColor:{r:255,g:255,b:255} },
+      { id:'static_yellow', name:'Static Yellow', staticColor:{r:255,g:255,b:0}   },
+      { id:'static_cyan',   name:'Static Cyan',   staticColor:{r:0,  g:255,b:255} },
+      { id:'static_purple', name:'Static Purple', staticColor:{r:160,g:32, b:240} },
+      { id:'static_orange', name:'Static Orange', staticColor:{r:255,g:100,b:0}   },
+      { id:'static_pink',   name:'Static Pink',   staticColor:{r:255,g:20, b:147} },
     ]
   },
   {
     label: 'Gradual Change',
     color: 'rgba(100,200,255,0.6)',
     modes: [
-      { id:'grad_7',     name:'7-Color Gradual',    code:0x25 },
-      { id:'grad_3',     name:'3-Color Gradual (R→G→B)', code:0x2d },
-      { id:'grad_red',   name:'Red Gradual',        code:0x26 },
-      { id:'grad_green', name:'Green Gradual',      code:0x27 },
-      { id:'grad_blue',  name:'Blue Gradual',       code:0x28 },
-      { id:'grad_yellow',name:'Yellow Gradual',     code:0x29 },
-      { id:'grad_cyan',  name:'Cyan Gradual',       code:0x2a },
-      { id:'grad_purple',name:'Purple Gradual',     code:0x2b },
-      { id:'grad_white', name:'White Gradual',      code:0x2c },
+      // code56 → 0x56-family codes  |  code7e → 7E-family codes
+      { id:'grad_7',      name:'7-Color Gradual',       code56:0x25, code7e:0x28 },
+      { id:'grad_3',      name:'3-Color Gradual (R→G→B)', code56:0x2d, code7e:0x27 },
+      { id:'grad_red',    name:'Red Gradual',            code56:0x26, code7e:0x2b },
+      { id:'grad_green',  name:'Green Gradual',          code56:0x27, code7e:0x2d },
+      { id:'grad_blue',   name:'Blue Gradual',           code56:0x28, code7e:0x2c },
+      { id:'grad_yellow', name:'Yellow Gradual',         code56:0x29, code7e:0x2f },
+      { id:'grad_cyan',   name:'Cyan Gradual',           code56:0x2a, code7e:0x2e },
+      { id:'grad_purple', name:'Purple Gradual',         code56:0x2b, code7e:0x30 },
+      { id:'grad_white',  name:'White Gradual',          code56:0x2c, code7e:0x31 },
     ]
   },
   {
     label: 'Crossfade',
     color: 'rgba(150,100,255,0.6)',
     modes: [
-      { id:'cross_7',    name:'7-Color Crossfade',  code:0x25 },
-      { id:'cross_rg',   name:'Red ↔ Green',        code:0x2d },
-      { id:'cross_rb',   name:'Red ↔ Blue',         code:0x2e },
-      { id:'cross_gb',   name:'Green ↔ Blue',       code:0x2f },
-      { id:'cross_3',    name:'3-Color Crossfade',  code:0x2d },
+      { id:'cross_7',  name:'7-Color Crossfade', code56:0x25, code7e:0x28 },
+      { id:'cross_3',  name:'3-Color Crossfade', code56:0x2d, code7e:0x27 },
+      { id:'cross_rg', name:'Red ↔ Green',       code56:0x2d, code7e:0x27 },
+      { id:'cross_rb', name:'Red ↔ Blue',        code56:0x2e, code7e:0x27 },
+      { id:'cross_gb', name:'Green ↔ Blue',      code56:0x2f, code7e:0x27 },
     ]
   },
   {
     label: 'Jump / Flash',
     color: 'rgba(255,200,0,0.6)',
     modes: [
-      { id:'jump_7',     name:'7-Color Jump',       code:0x38 },
-      { id:'flash_7',    name:'7-Color Flash',      code:0x30 },
-      { id:'flash_red',  name:'Red Flash',          code:0x31 },
-      { id:'flash_green',name:'Green Flash',        code:0x32 },
-      { id:'flash_blue', name:'Blue Flash',         code:0x33 },
-      { id:'flash_yellow',name:'Yellow Flash',      code:0x34 },
-      { id:'flash_cyan', name:'Cyan Flash',         code:0x35 },
-      { id:'flash_purple',name:'Purple Flash',      code:0x36 },
-      { id:'flash_white',name:'White Flash',        code:0x37 },
+      { id:'jump_7',      name:'7-Color Jump',    code56:0x38, code7e:0x26 },
+      { id:'flash_7',     name:'7-Color Flash',   code56:0x30, code7e:0x29 },
+      { id:'flash_red',   name:'Red Flash',       code56:0x31, code7e:0x32 },
+      { id:'flash_green', name:'Green Flash',     code56:0x32, code7e:0x34 },
+      { id:'flash_blue',  name:'Blue Flash',      code56:0x33, code7e:0x33 },
+      { id:'flash_yellow',name:'Yellow Flash',    code56:0x34, code7e:0x36 },
+      { id:'flash_cyan',  name:'Cyan Flash',      code56:0x35, code7e:0x35 },
+      { id:'flash_purple',name:'Purple Flash',    code56:0x36, code7e:0x37 },
+      { id:'flash_white', name:'White Flash',     code56:0x37, code7e:0x38 },
     ]
   },
   {
     label: 'Strobe',
     color: 'rgba(255,50,100,0.6)',
     modes: [
-      { id:'strobe_7',     name:'7-Color Strobe',   code:0x30 },
-      { id:'strobe_red',   name:'Red Strobe',       code:0x31 },
-      { id:'strobe_green', name:'Green Strobe',     code:0x32 },
-      { id:'strobe_blue',  name:'Blue Strobe',      code:0x33 },
-      { id:'strobe_yellow',name:'Yellow Strobe',    code:0x34 },
-      { id:'strobe_cyan',  name:'Cyan Strobe',      code:0x35 },
-      { id:'strobe_purple',name:'Purple Strobe',    code:0x36 },
-      { id:'strobe_white', name:'White Strobe',     code:0x37 },
+      { id:'strobe_7',      name:'7-Color Strobe',  code56:0x30, code7e:0x2a },
+      { id:'strobe_red',    name:'Red Strobe',      code56:0x31, code7e:0x32 },
+      { id:'strobe_green',  name:'Green Strobe',    code56:0x32, code7e:0x34 },
+      { id:'strobe_blue',   name:'Blue Strobe',     code56:0x33, code7e:0x33 },
+      { id:'strobe_yellow', name:'Yellow Strobe',   code56:0x34, code7e:0x36 },
+      { id:'strobe_cyan',   name:'Cyan Strobe',     code56:0x35, code7e:0x35 },
+      { id:'strobe_purple', name:'Purple Strobe',   code56:0x36, code7e:0x37 },
+      { id:'strobe_white',  name:'White Strobe',    code56:0x37, code7e:0x38 },
     ]
   },
 ];
@@ -387,22 +411,27 @@ export default function App() {
     const server = await connectGATT(bleDevice);
     diagServerRef.current = server;
 
-    // If user already picked a characteristic via diagnostic scan, re-resolve it
     let char;
+
+    // If user already picked a characteristic via diagnostic scan, re-resolve it
     if (customCharRef.current) {
       try {
         const svc = await server.getPrimaryService(customCharRef.current.serviceUuid);
         char = await svc.getCharacteristic(customCharRef.current.uuid);
       } catch { char = null; }
     }
+
     // Fall back to known service map
     if (!char) {
       const resolved = await resolveCharacteristic(server);
       char = resolved.char;
-      const detectedProto = resolved.proto;
-      protocolRef.current = detectedProto;
-      setProtocol(detectedProto);
     }
+
+    // ALWAYS derive protocol from the actual characteristic UUID — this is the
+    // single source of truth and fixes the bug where custom-char path skipped detection
+    const detectedProto = protoFromCharUUID(char.uuid);
+    protocolRef.current = detectedProto;
+    setProtocol(detectedProto);
 
     charRef.current   = char;
     deviceRef.current = bleDevice;
@@ -493,6 +522,7 @@ export default function App() {
     try {
       const svc = localStorage.getItem('lumina_custom_svc');
       const chr = localStorage.getItem('lumina_custom_chr');
+      // Only restore if it's the fff3 char we now handle natively
       if (svc && chr) customCharRef.current = { serviceUuid: svc, uuid: chr };
     } catch {}
     const tryAutoConnect = async () => {
@@ -628,17 +658,21 @@ export default function App() {
 
       const proto = protocolRef.current;
       const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
+      const [p1, p2, p3] = remap(r, g, b);
 
       let data;
       if (proto === '7e') {
-        // 7E protocol — brightness is a separate command; color bytes are raw (not scaled)
-        const [p1, p2, p3] = remap(r, g, b);
+        // 7E: brightness is sent separately; color bytes are NOT pre-scaled
         data = build7E(p1, p2, p3, mode);
       } else {
-        // 0x56 protocol — brightness is baked into the RGB values
+        // 0x56: brightness is baked into color bytes
         const f = brightnessRef.current / 100;
-        const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
-        data = build0x56(p1, p2, p3, mode);
+        data = build0x56(
+          Math.round(p1 * f),
+          Math.round(p2 * f),
+          Math.round(p3 * f),
+          mode
+        );
       }
 
       try {
@@ -647,11 +681,11 @@ export default function App() {
         } else {
           await char.writeValue(data);
         }
-      } catch { /* swallow GATT busy / disconnected */ }
+      } catch { /* swallow */ }
     });
   }, []);
 
-  // For 7E devices, push a brightness packet whenever the slider moves
+  // For 7E devices send a dedicated brightness packet whenever the slider moves
   const sendBrightness7E = useCallback((pct) => {
     if (protocolRef.current !== '7e') return;
     cmdQueueRef.current = cmdQueueRef.current.then(() => writeRaw(build7E_brightness(pct)));
@@ -708,7 +742,11 @@ export default function App() {
       setColor(m.staticColor);
       sendCommand(m.staticColor.r, m.staticColor.g, m.staticColor.b, 0x00);
     } else {
-      sendCommand(0, 0, 0, m.code);
+      // Pick the right mode code for the active protocol
+      const code = protocolRef.current === '7e'
+        ? (m.code7e ?? m.code56 ?? 0x25)
+        : (m.code56 ?? m.code7e ?? 0x25);
+      sendCommand(0, 0, 0, code);
     }
   };
 
