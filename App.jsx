@@ -7,34 +7,79 @@ import {
 } from 'lucide-react';
 
 // ─── BLE CONFIG ───────────────────────────────────────────────────────────────
-const PRIMARY_SERVICE  = '0000ffd5-0000-1000-8000-00805f9b34fb';
-const PRIMARY_CHAR     = '0000ffd9-0000-1000-8000-00805f9b34fb';
-const FALLBACK_SERVICE = '0000ffe5-0000-1000-8000-00805f9b34fb';
-const FALLBACK_CHAR    = '0000ffe9-0000-1000-8000-00805f9b34fb';
 
-// Known LED controller name prefixes — pre-filters scan list for faster discovery
+// Every known LED/RGB BLE controller service UUID found in the wild
+const KNOWN_LED_SERVICES = [
+  // ── ELK-BLED / Triones / SP110E ──
+  '0000ffd5-0000-1000-8000-00805f9b34fb',
+  '0000ffd0-0000-1000-8000-00805f9b34fb',
+  // ── Magic Home / LampSmart ──
+  '0000ffe5-0000-1000-8000-00805f9b34fb',
+  '0000ffe0-0000-1000-8000-00805f9b34fb',
+  // ── HM-10 / JDY-08 UART ──
+  '0000ffe1-0000-1000-8000-00805f9b34fb', // sometimes listed as service too
+  // ── Common 0xff__ short UUIDs ──
+  '0000ff00-0000-1000-8000-00805f9b34fb',
+  '0000ff01-0000-1000-8000-00805f9b34fb',
+  '0000ff02-0000-1000-8000-00805f9b34fb',
+  '0000ff03-0000-1000-8000-00805f9b34fb',
+  '0000ff10-0000-1000-8000-00805f9b34fb',
+  '0000ff12-0000-1000-8000-00805f9b34fb',
+  '0000ff20-0000-1000-8000-00805f9b34fb',
+  // ── ZengGe / iLedBlue ──
+  '0000a002-0000-1000-8000-00805f9b34fb',
+  '00001910-0000-1000-8000-00805f9b34fb',
+  // ── ISSC / Microchip UART ──
+  '49535343-fe7d-4ae5-8fa9-9fafd205e455',
+  // ── Nordic UART (NUS) ──
+  '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
+  // ── Silicon Labs OTA / BG ──
+  '1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0',
+  // ── Govee / Minger ──
+  '00010203-0405-0607-0809-0a0b0c0d1910',
+  // ── YiLight / MiPow ──
+  '0000fff0-0000-1000-8000-00805f9b34fb',
+  '0000fff5-0000-1000-8000-00805f9b34fb',
+  // ── Generic BLE LED common variants ──
+  '0000180a-0000-1000-8000-00805f9b34fb', // device info (sometimes writable)
+  '0000ae00-0000-1000-8000-00805f9b34fb',
+  '0000be00-0000-1000-8000-00805f9b34fb',
+  '0000af00-0000-1000-8000-00805f9b34fb',
+  '0000cc00-0000-1000-8000-00805f9b34fb',
+  '0000aa00-0000-1000-8000-00805f9b34fb',
+  '0000ab00-0000-1000-8000-00805f9b34fb',
+  '0000b000-0000-1000-8000-00805f9b34fb',
+];
+
+// Ordered list of {svc, chr} pairs tried during normal connect
+const SERVICE_MAP = [
+  { svc:'0000ffd5-0000-1000-8000-00805f9b34fb', chr:'0000ffd9-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000ffe5-0000-1000-8000-00805f9b34fb', chr:'0000ffe9-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000ffe0-0000-1000-8000-00805f9b34fb', chr:'0000ffe1-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000ff01-0000-1000-8000-00805f9b34fb', chr:'0000ff02-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff3-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000fff0-0000-1000-8000-00805f9b34fb', chr:'0000fff4-0000-1000-8000-00805f9b34fb' },
+  { svc:'49535343-fe7d-4ae5-8fa9-9fafd205e455', chr:'49535343-1e4d-4bd9-ba61-23c647249616' },
+  { svc:'6e400001-b5a3-f393-e0a9-e50e24dcca9e', chr:'6e400002-b5a3-f393-e0a9-e50e24dcca9e' },
+  { svc:'0000aa00-0000-1000-8000-00805f9b34fb', chr:'0000aa01-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000ae00-0000-1000-8000-00805f9b34fb', chr:'0000ae01-0000-1000-8000-00805f9b34fb' },
+  { svc:'0000be00-0000-1000-8000-00805f9b34fb', chr:'0000be01-0000-1000-8000-00805f9b34fb' },
+  { svc:'00010203-0405-0607-0809-0a0b0c0d1910', chr:'00010203-0405-0607-0809-0a0b0c0d2b12' },
+];
+
+// De-duplicated list of all service UUIDs (needed for optionalServices)
+const ALL_SERVICES = [...new Set([
+  ...KNOWN_LED_SERVICES,
+  ...SERVICE_MAP.map(s => s.svc),
+])];
+
+// Known LED controller name prefixes
 const BLE_NAME_PREFIXES = [
   'ELK','LED','Triones','Magic','SP1','MELK','QHM','HM','BLE','iLC',
-  'ZJ','Lamp','Light','Strip','RGB','LEDBLE','RGBW','MagicLight',
+  'ZJ','Lamp','Light','Strip','RGB','LEDBLE','RGBW','MagicLight','Govee',
+  'YeeLight','MiPow','iLight','IBLE','AK','LD','XQ','BT',
 ];
 
-// Extended service map — tried in order until one works
-const SERVICE_MAP = [
-  // Most common generic RGB BLE controllers (ELK-BLED01, Triones, SP110E)
-  { svc: '0000ffd5-0000-1000-8000-00805f9b34fb', chr: '0000ffd9-0000-1000-8000-00805f9b34fb' },
-  // Magic Home / second-gen controllers
-  { svc: '0000ffe5-0000-1000-8000-00805f9b34fb', chr: '0000ffe9-0000-1000-8000-00805f9b34fb' },
-  // HM-10 UART bridge (many cheap modules)
-  { svc: '0000ffe0-0000-1000-8000-00805f9b34fb', chr: '0000ffe1-0000-1000-8000-00805f9b34fb' },
-  // Some ZJ / QHM variants
-  { svc: '0000ff01-0000-1000-8000-00805f9b34fb', chr: '0000ff02-0000-1000-8000-00805f9b34fb' },
-  // ISSC UART (some SP110E firmware)
-  { svc: '49535343-fe7d-4ae5-8fa9-9fafd205e455', chr: '49535343-1e4d-4bd9-ba61-23c647249616' },
-  // Nordic UART Service (NUS) fallback
-  { svc: '6e400001-b5a3-f393-e0a9-e50e24dcca9e', chr: '6e400002-b5a3-f393-e0a9-e50e24dcca9e' },
-];
-
-const ALL_SERVICES = [...new Set(SERVICE_MAP.map(s => s.svc))];
 const LAST_DEVICE_KEY    = 'lumina_last_device_id';
 const GATT_MAX_RETRIES   = 3;
 const GATT_RETRY_MS      = 600;
@@ -56,18 +101,26 @@ async function resolveCharacteristic(server) {
   for (const { svc, chr } of SERVICE_MAP) {
     try {
       const service = await server.getPrimaryService(svc);
-      return await service.getCharacteristic(chr);
+      const char    = await service.getCharacteristic(chr);
+      return char;
     } catch { /* try next */ }
   }
-  throw new Error('No matching BLE service on this device.');
+  // Last resort: ask for ALL declared services and return first writable char
+  try {
+    const services = await server.getPrimaryServices();
+    for (const svc of services) {
+      const chars = await svc.getCharacteristics();
+      const writable = chars.find(c => c.properties.write || c.properties.writeWithoutResponse);
+      if (writable) return writable;
+    }
+  } catch {}
+  throw new Error('NO_SERVICE');
 }
 
 function buildRequestOptions() {
   return {
     filters: [
-      // Match by any of our known service UUIDs — fastest possible discovery
       ...ALL_SERVICES.map(s => ({ services: [s] })),
-      // Also match by common name prefixes as a fallback
       ...BLE_NAME_PREFIXES.map(p => ({ namePrefix: p })),
     ],
     optionalServices: ALL_SERVICES,
@@ -75,7 +128,6 @@ function buildRequestOptions() {
 }
 
 // ─── PIN SEQUENCES ────────────────────────────────────────────────────────────
-// Maps logical (r,g,b) to the physical wire order your strip expects
 const PIN_SEQUENCES = {
   RGB: (r,g,b) => [r,g,b],
   RBG: (r,g,b) => [r,b,g],
@@ -426,6 +478,8 @@ export default function App() {
     try {
       let bleDevice;
       try {
+        // Must declare ALL_SERVICES in optionalServices — Web Bluetooth won't
+        // let you access ANY service that wasn't declared at request time
         bleDevice = await navigator.bluetooth.requestDevice({
           acceptAllDevices: true,
           optionalServices: ALL_SERVICES,
@@ -435,13 +489,12 @@ export default function App() {
         throw e;
       }
 
-      // Connect with no optionalServices declared — then call getPrimaryServices()
-      // which returns everything the device advertises
-      const server   = await connectGATT(bleDevice);
+      const server = await connectGATT(bleDevice);
       diagServerRef.current = server;
       deviceRef.current     = bleDevice;
       setDevice(bleDevice);
 
+      // getPrimaryServices() only returns services that were in optionalServices
       let allServices = [];
       try { allServices = await server.getPrimaryServices(); } catch {}
 
@@ -450,22 +503,24 @@ export default function App() {
         let chars = [];
         try { chars = await svc.getCharacteristics(); } catch {}
         const charInfos = chars.map(c => ({
-          uuid:  c.uuid,
-          props: Object.entries(c.properties)
-                   .filter(([,v]) => v)
-                   .map(([k]) => k)
-                   .join(', '),
+          uuid:     c.uuid,
+          props:    Object.entries(c.properties).filter(([,v])=>v).map(([k])=>k).join(', '),
           writable: c.properties.write || c.properties.writeWithoutResponse,
-          charObj: c,
+          charObj:  c,
         }));
         result.push({ svcUuid: svc.uuid, chars: charInfos });
+      }
+
+      if (result.length === 0) {
+        // Device connected but its service UUID isn't in our list.
+        // Show UUID copy instructions.
+        setBleError('UNKNOWN_UUID');
       }
 
       setDiagServices(result);
       setDiagMode(true);
       setDiagScanning(false);
 
-      // Listen for disconnect
       bleDevice.addEventListener('gattserverdisconnected', () => {
         setIsConnected(false); charRef.current = null;
       });
@@ -688,7 +743,7 @@ export default function App() {
             </div>
           </NeonCard>
 
-          {bleError && (
+          {bleError && bleError !== 'UNKNOWN_UUID' && (
             <div className="flex gap-2 p-3 rounded-xl"
               style={{ background:'rgba(255,50,50,0.08)', border:'1px solid rgba(255,50,50,0.2)' }}>
               <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5"/>
@@ -747,9 +802,32 @@ export default function App() {
 
             {diagMode && (
               <div className="p-4 space-y-3" style={{ background:'rgba(10,5,0,0.6)' }}>
-                <p className="text-[9px] text-orange-300/60 leading-relaxed">
-                  If "no service found" — use this to discover your device's real UUIDs. Tap any <span className="text-green-400">writable</span> characteristic to use it.
-                </p>
+                {bleError === 'UNKNOWN_UUID' ? (
+                  <div className="p-4 rounded-xl space-y-3" style={{ background:'rgba(255,100,0,0.08)', border:'1px solid rgba(255,100,0,0.25)' }}>
+                    <p className="text-[10px] font-black uppercase tracking-widest text-orange-400">UUID Not in Database</p>
+                    <p className="text-[9px] text-orange-200/70 leading-relaxed">
+                      Your device connected but uses a service UUID we don't have. To find it:
+                    </p>
+                    <div className="space-y-1.5">
+                      {[
+                        '1. On a desktop Chrome, go to chrome://bluetooth-internals',
+                        '2. Click "Devices" → find your strip → click Inspect',
+                        '3. Look for a service with a writable characteristic',
+                        '4. Copy both the Service UUID and Characteristic UUID',
+                        '5. Share them here and I\'ll add permanent support',
+                      ].map((s,i) => (
+                        <p key={i} className="text-[9px] font-mono" style={{ color:'rgba(255,180,100,0.7)' }}>{s}</p>
+                      ))}
+                    </div>
+                    <p className="text-[9px] text-orange-300/50 leading-relaxed pt-1 border-t" style={{ borderColor:'rgba(255,100,0,0.15)' }}>
+                      Alternatively install <strong className="text-orange-300">nRF Connect</strong> (Android/iOS) — connect your strip and screenshot the GATT services. That will show the exact UUIDs.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="text-[9px] text-orange-300/60 leading-relaxed">
+                    If "no service found" — use this to discover your device's real UUIDs. Tap any <span className="text-green-400">writable</span> characteristic to use it.
+                  </p>
+                )}
 
                 {customChar && (
                   <div className="p-3 rounded-xl" style={{ background:'rgba(0,255,100,0.06)', border:'1px solid rgba(0,255,100,0.2)' }}>
