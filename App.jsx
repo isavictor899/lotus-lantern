@@ -657,22 +657,19 @@ export default function App() {
       if (!char) return;
 
       const proto = protocolRef.current;
-      const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
-      const [p1, p2, p3] = remap(r, g, b);
 
       let data;
       if (proto === '7e') {
-        // 7E: brightness is sent separately; color bytes are NOT pre-scaled
-        data = build7E(p1, p2, p3, mode);
+        // 7E protocol: send R,G,B directly — the controller handles its own
+        // internal wire mapping. Applying pin remap here causes double-swapping
+        // (e.g. GRB remap turns red→green because the chip already remaps).
+        data = build7E(r, g, b, mode);
       } else {
-        // 0x56: brightness is baked into color bytes
+        // 0x56 protocol: apply pin remap + brightness scaling
+        const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
         const f = brightnessRef.current / 100;
-        data = build0x56(
-          Math.round(p1 * f),
-          Math.round(p2 * f),
-          Math.round(p3 * f),
-          mode
-        );
+        const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+        data = build0x56(p1, p2, p3, mode);
       }
 
       try {
