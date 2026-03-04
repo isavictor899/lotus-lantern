@@ -86,17 +86,21 @@ function build0x56(r, g, b, mode) {
 /**
  * 7E protocol — fff0/fff3 family and most newer cheap BLE strips
  *   SET COLOR : 7E 07 05 03 RR GG BB 10 EF
- *   SET MODE  : 7E 05 03 <mode> 03 FF FF 00 EF
+ *   SET EFFECT: 7E 05 03 <0x00–0x17> 03 FF FF 00 EF
  *   POWER ON  : 7E 04 04 01 FF FF FF 00 EF
  *   POWER OFF : 7E 04 04 00 FF FF FF 00 EF
- *   BRIGHTNESS: 7E 04 01 <0-64> FF FF FF 00 EF
+ *   BRIGHTNESS: 7E 04 01 <0–100> FF FF FF 00 EF
+ *
+ * Pass mode=null for static color, mode=number (0x00–0x17) for effects.
+ * This avoids the collision where effect code 0x00 looks like "no effect".
  */
 function build7E(r, g, b, mode) {
-  if (mode !== 0x00) {
-    return new Uint8Array([0x7e, 0x05, 0x03, mode, 0x03, 0xff, 0xff, 0x00, 0xef]);
+  if (mode !== null && mode !== undefined) {
+    // Effect packet — mode is 0x00–0x17
+    return new Uint8Array([0x7e, 0x05, 0x03, mode & 0xff, 0x03, 0xff, 0xff, 0x00, 0xef]);
   }
-  // NOTE: trailing byte must be 0x10 not 0x00 for fff3 devices
-  return new Uint8Array([0x7e, 0x07, 0x05, 0x03, r, g, b, 0x10, 0xef]);
+  // Static color packet
+  return new Uint8Array([0x7e, 0x07, 0x05, 0x03, r & 0xff, g & 0xff, b & 0xff, 0x10, 0xef]);
 }
 
 function build7E_power(on) {
@@ -199,10 +203,7 @@ const PIN_SEQUENCES = {
 };
 
 // ─── LIGHTING MODES ───────────────────────────────────────────────────────────
-// Each mode carries BOTH protocol codes:
-//   code56 = 0x56 protocol (ffd5/ffe5 family)
-//   code7e  = 7E  protocol (fff0/fff3 family — your device)
-// sendCommand picks the right one automatically.
+// code56 = 0x56 protocol  |  code7e = 7E protocol (fff0/fff3, valid range 0x00–0x17)
 const MODE_GROUPS = [
   {
     label: 'Static Colors',
@@ -223,56 +224,53 @@ const MODE_GROUPS = [
     label: 'Gradual Change',
     color: 'rgba(100,200,255,0.6)',
     modes: [
-      // code56 → 0x56-family codes  |  code7e → 7E-family codes
-      { id:'grad_7',      name:'7-Color Gradual',       code56:0x25, code7e:0x28 },
-      { id:'grad_3',      name:'3-Color Gradual (R→G→B)', code56:0x2d, code7e:0x27 },
-      { id:'grad_red',    name:'Red Gradual',            code56:0x26, code7e:0x2b },
-      { id:'grad_green',  name:'Green Gradual',          code56:0x27, code7e:0x2d },
-      { id:'grad_blue',   name:'Blue Gradual',           code56:0x28, code7e:0x2c },
-      { id:'grad_yellow', name:'Yellow Gradual',         code56:0x29, code7e:0x2f },
-      { id:'grad_cyan',   name:'Cyan Gradual',           code56:0x2a, code7e:0x2e },
-      { id:'grad_purple', name:'Purple Gradual',         code56:0x2b, code7e:0x30 },
-      { id:'grad_white',  name:'White Gradual',          code56:0x2c, code7e:0x31 },
+      { id:'grad_7',      name:'7-Color Gradual',         code56:0x25, code7e:0x00 },
+      { id:'grad_red',    name:'Red Gradual',             code56:0x26, code7e:0x01 },
+      { id:'grad_green',  name:'Green Gradual',           code56:0x27, code7e:0x02 },
+      { id:'grad_blue',   name:'Blue Gradual',            code56:0x28, code7e:0x03 },
+      { id:'grad_yellow', name:'Yellow Gradual',          code56:0x29, code7e:0x04 },
+      { id:'grad_cyan',   name:'Cyan Gradual',            code56:0x2a, code7e:0x05 },
+      { id:'grad_purple', name:'Purple Gradual',          code56:0x2b, code7e:0x06 },
+      { id:'grad_white',  name:'White Gradual',           code56:0x2c, code7e:0x07 },
+      { id:'grad_3',      name:'3-Color Gradual (R→G→B)', code56:0x2d, code7e:0x08 },
     ]
   },
   {
     label: 'Crossfade',
     color: 'rgba(150,100,255,0.6)',
     modes: [
-      { id:'cross_7',  name:'7-Color Crossfade', code56:0x25, code7e:0x28 },
-      { id:'cross_3',  name:'3-Color Crossfade', code56:0x2d, code7e:0x27 },
-      { id:'cross_rg', name:'Red ↔ Green',       code56:0x2d, code7e:0x27 },
-      { id:'cross_rb', name:'Red ↔ Blue',        code56:0x2e, code7e:0x27 },
-      { id:'cross_gb', name:'Green ↔ Blue',      code56:0x2f, code7e:0x27 },
+      { id:'cross_7',  name:'7-Color Crossfade', code56:0x25, code7e:0x00 },
+      { id:'cross_3',  name:'3-Color Crossfade', code56:0x2d, code7e:0x08 },
+      { id:'cross_rg', name:'Red ↔ Green',       code56:0x2d, code7e:0x08 },
+      { id:'cross_rb', name:'Red ↔ Blue',        code56:0x2e, code7e:0x08 },
+      { id:'cross_gb', name:'Green ↔ Blue',      code56:0x2f, code7e:0x08 },
     ]
   },
   {
     label: 'Jump / Flash',
     color: 'rgba(255,200,0,0.6)',
     modes: [
-      { id:'jump_7',      name:'7-Color Jump',    code56:0x38, code7e:0x26 },
-      { id:'flash_7',     name:'7-Color Flash',   code56:0x30, code7e:0x29 },
-      { id:'flash_red',   name:'Red Flash',       code56:0x31, code7e:0x32 },
-      { id:'flash_green', name:'Green Flash',     code56:0x32, code7e:0x34 },
-      { id:'flash_blue',  name:'Blue Flash',      code56:0x33, code7e:0x33 },
-      { id:'flash_yellow',name:'Yellow Flash',    code56:0x34, code7e:0x36 },
-      { id:'flash_cyan',  name:'Cyan Flash',      code56:0x35, code7e:0x35 },
-      { id:'flash_purple',name:'Purple Flash',    code56:0x36, code7e:0x37 },
-      { id:'flash_white', name:'White Flash',     code56:0x37, code7e:0x38 },
+      { id:'jump_7',      name:'7-Color Jump',    code56:0x38, code7e:0x09 },
+      { id:'flash_7',     name:'7-Color Flash',   code56:0x30, code7e:0x0a },
+      { id:'flash_red',   name:'Red Flash',       code56:0x31, code7e:0x0b },
+      { id:'flash_green', name:'Green Flash',     code56:0x32, code7e:0x0c },
+      { id:'flash_blue',  name:'Blue Flash',      code56:0x33, code7e:0x0d },
+      { id:'flash_yellow',name:'Yellow Flash',    code56:0x34, code7e:0x0e },
+      { id:'flash_cyan',  name:'Cyan Flash',      code56:0x35, code7e:0x0f },
+      { id:'flash_purple',name:'Purple Flash',    code56:0x36, code7e:0x10 },
+      { id:'flash_white', name:'White Flash',     code56:0x37, code7e:0x11 },
     ]
   },
   {
     label: 'Strobe',
     color: 'rgba(255,50,100,0.6)',
     modes: [
-      { id:'strobe_7',      name:'7-Color Strobe',  code56:0x30, code7e:0x2a },
-      { id:'strobe_red',    name:'Red Strobe',      code56:0x31, code7e:0x32 },
-      { id:'strobe_green',  name:'Green Strobe',    code56:0x32, code7e:0x34 },
-      { id:'strobe_blue',   name:'Blue Strobe',     code56:0x33, code7e:0x33 },
-      { id:'strobe_yellow', name:'Yellow Strobe',   code56:0x34, code7e:0x36 },
-      { id:'strobe_cyan',   name:'Cyan Strobe',     code56:0x35, code7e:0x35 },
-      { id:'strobe_purple', name:'Purple Strobe',   code56:0x36, code7e:0x37 },
-      { id:'strobe_white',  name:'White Strobe',    code56:0x37, code7e:0x38 },
+      { id:'strobe_red',    name:'Red Strobe',      code56:0x31, code7e:0x12 },
+      { id:'strobe_green',  name:'Green Strobe',    code56:0x32, code7e:0x13 },
+      { id:'strobe_blue',   name:'Blue Strobe',     code56:0x33, code7e:0x14 },
+      { id:'strobe_yellow', name:'Yellow Strobe',   code56:0x34, code7e:0x15 },
+      { id:'strobe_cyan',   name:'Cyan Strobe',     code56:0x35, code7e:0x16 },
+      { id:'strobe_white',  name:'White Strobe',    code56:0x37, code7e:0x17 },
     ]
   },
 ];
@@ -391,18 +389,20 @@ export default function App() {
   const analyserRef    = useRef(null);
   const rafRef         = useRef(null);
   const micStreamRef   = useRef(null);
-  const deviceRef      = useRef(null);       // for auto-reconnect closure
-  const cmdQueueRef    = useRef(Promise.resolve()); // serialises all BLE writes
+  const deviceRef      = useRef(null);
+  const cmdQueueRef    = useRef(Promise.resolve());
   const reconnTimerRef = useRef(null);
-  const customCharRef  = useRef(null);       // user-picked char from diagnostic scan
-  const diagServerRef  = useRef(null);       // GATT server kept open during diag
-  const protocolRef    = useRef('auto');     // tracks active protocol without stale closure
+  const customCharRef  = useRef(null);
+  const diagServerRef  = useRef(null);
+  const protocolRef    = useRef('auto');
+  const isPoweredOnRef = useRef(true);   // avoids stale closure in togglePower
 
-  useEffect(() => { charRef.current = characteristic; },   [characteristic]);
-  useEffect(() => { brightnessRef.current = brightness; }, [brightness]);
-  useEffect(() => { colorRef.current = color; },           [color]);
-  useEffect(() => { pinSeqRef.current = pinSeq; },         [pinSeq]);
-  useEffect(() => { protocolRef.current = protocol; },     [protocol]);
+  useEffect(() => { charRef.current = characteristic; },       [characteristic]);
+  useEffect(() => { brightnessRef.current = brightness; },     [brightness]);
+  useEffect(() => { colorRef.current = color; },               [color]);
+  useEffect(() => { pinSeqRef.current = pinSeq; },             [pinSeq]);
+  useEffect(() => { protocolRef.current = protocol; },         [protocol]);
+  useEffect(() => { isPoweredOnRef.current = isPoweredOn; },   [isPoweredOn]);
 
   // ── BLE ──────────────────────────────────────────────────────────────────
 
@@ -648,88 +648,85 @@ export default function App() {
       } else {
         await char.writeValue(data);
       }
-    } catch { /* swallow GATT busy */ }
+    } catch {}
   }, []);
 
-  const sendCommand = useCallback((r, g, b, mode = 0x00) => {
+  // mode = undefined/null  → static color
+  // mode = number (0x00–0x17 for 7E, 0x25–0x38 for 0x56) → effect
+  const sendCommand = useCallback((r, g, b, mode) => {
     cmdQueueRef.current = cmdQueueRef.current.then(async () => {
       const char = charRef.current;
       if (!char) return;
-
       const proto = protocolRef.current;
-
       let data;
       if (proto === '7e') {
-        // 7E protocol: send R,G,B directly — the controller handles its own
-        // internal wire mapping. Applying pin remap here causes double-swapping
-        // (e.g. GRB remap turns red→green because the chip already remaps).
-        data = build7E(r, g, b, mode);
+        const effectMode = (mode !== undefined && mode !== null) ? mode : null;
+        data = build7E(r, g, b, effectMode);
       } else {
-        // 0x56 protocol: apply pin remap + brightness scaling
-        const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
         const f = brightnessRef.current / 100;
+        const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
         const [p1, p2, p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
-        data = build0x56(p1, p2, p3, mode);
+        data = build0x56(p1, p2, p3, mode ?? 0x00);
       }
-
       try {
         if (char.properties?.writeWithoutResponse) {
           await char.writeValueWithoutResponse(data);
         } else {
           await char.writeValue(data);
         }
-      } catch { /* swallow */ }
+      } catch {}
     });
   }, []);
 
-  // For 7E devices send a dedicated brightness packet whenever the slider moves
+  // Dedicated brightness packet for 7E (works on any tab)
   const sendBrightness7E = useCallback((pct) => {
     if (protocolRef.current !== '7e') return;
     cmdQueueRef.current = cmdQueueRef.current.then(() => writeRaw(build7E_brightness(pct)));
   }, [writeRaw]);
 
   // ── Color sync ───────────────────────────────────────────────────────────
-
+  // Fires whenever color or brightness changes (all tabs except mic-active)
   useEffect(() => {
-    if (!isConnected || isMicActive || activeTab === 'fx' || !isPoweredOn) return;
+    if (!isConnected || isMicActive || !isPoweredOn) return;
     const t = setTimeout(() => {
-      // For 7E devices send brightness first, then color
-      if (protocolRef.current === '7e') sendBrightness7E(brightness);
-      sendCommand(color.r, color.g, color.b);
+      if (protocolRef.current === '7e') {
+        // Always send brightness first for 7E, then color (only on static tab)
+        sendBrightness7E(brightness);
+        if (activeTab !== 'fx') sendCommand(color.r, color.g, color.b, null);
+      } else {
+        if (activeTab !== 'fx') sendCommand(color.r, color.g, color.b);
+      }
     }, 50);
     return () => clearTimeout(t);
   }, [color, brightness, isConnected, isMicActive, activeTab, isPoweredOn, sendCommand, sendBrightness7E]);
 
   // ── Power on / off ───────────────────────────────────────────────────────
-
   const togglePower = useCallback(() => {
-    if (!isConnected) return;
-    const proto = protocolRef.current;
-    if (isPoweredOn) {
+    if (!charRef.current) return;
+    const proto    = protocolRef.current;
+    const nowOn    = isPoweredOnRef.current;   // read from ref — never stale
+    if (nowOn) {
+      isPoweredOnRef.current = false;
       setIsPoweredOn(false);
       stopMic();
       if (proto === '7e') {
-        // 7E has a real power-off command
         cmdQueueRef.current = cmdQueueRef.current.then(() => writeRaw(build7E_power(false)));
       } else {
-        sendCommand(0, 0, 0);
+        sendCommand(0, 0, 0, 0x00);
       }
     } else {
+      isPoweredOnRef.current = true;
       setIsPoweredOn(true);
       if (proto === '7e') {
-        // 7E: power on then restore brightness + color
         cmdQueueRef.current = cmdQueueRef.current
           .then(() => writeRaw(build7E_power(true)))
           .then(() => writeRaw(build7E_brightness(brightnessRef.current)))
-          .then(() => {
-            const { r, g, b } = colorRef.current;
-            return writeRaw(build7E(r, g, b, 0x00));
-          });
+          .then(() => writeRaw(build7E(colorRef.current.r, colorRef.current.g, colorRef.current.b, null)));
       } else {
         sendCommand(colorRef.current.r, colorRef.current.g, colorRef.current.b);
       }
     }
-  }, [isPoweredOn, isConnected, sendCommand, writeRaw]);
+  }, [sendCommand, writeRaw]);
 
   // ── FX mode select ───────────────────────────────────────────────────────
 
@@ -737,12 +734,12 @@ export default function App() {
     setActiveDynamic(m.id);
     if (m.staticColor) {
       setColor(m.staticColor);
-      sendCommand(m.staticColor.r, m.staticColor.g, m.staticColor.b, 0x00);
+      if (protocolRef.current === '7e') sendBrightness7E(brightnessRef.current);
+      sendCommand(m.staticColor.r, m.staticColor.g, m.staticColor.b, null);
     } else {
-      // Pick the right mode code for the active protocol
       const code = protocolRef.current === '7e'
-        ? (m.code7e ?? m.code56 ?? 0x25)
-        : (m.code56 ?? m.code7e ?? 0x25);
+        ? (m.code7e ?? m.code56)
+        : (m.code56 ?? m.code7e);
       sendCommand(0, 0, 0, code);
     }
   };
