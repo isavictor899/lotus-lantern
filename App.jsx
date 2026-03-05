@@ -375,6 +375,10 @@ export default function App() {
   // Protocol detected from connected service ('0x56' | '7e' | 'auto')
   const [protocol, setProtocol]         = useState('auto');
 
+  // Chase / trail effect
+  const [chaseMode, setChaseMode]       = useState(null); // null | 'pulse' | 'rainbow' | 'twinkle'
+  const [chaseSpeed, setChaseSpeed]     = useState(3);    // 1–5
+
   // Scheduler
   const [schedules, setSchedules]       = useState([]);
   const [schedInput, setSchedInput]     = useState({ onTime:'18:00', offTime:'23:00', days:[1,2,3,4,5] });
@@ -395,7 +399,11 @@ export default function App() {
   const customCharRef  = useRef(null);
   const diagServerRef  = useRef(null);
   const protocolRef    = useRef('auto');
-  const isPoweredOnRef = useRef(true);   // avoids stale closure in togglePower
+  const isPoweredOnRef = useRef(true);
+  const chaseTimerRef  = useRef(null);
+  const chasePhaseRef  = useRef(0);
+  const chaseModeRef   = useRef(null);
+  const chaseSpeedRef  = useRef(3);
 
   useEffect(() => { charRef.current = characteristic; },       [characteristic]);
   useEffect(() => { brightnessRef.current = brightness; },     [brightness]);
@@ -403,6 +411,8 @@ export default function App() {
   useEffect(() => { pinSeqRef.current = pinSeq; },             [pinSeq]);
   useEffect(() => { protocolRef.current = protocol; },         [protocol]);
   useEffect(() => { isPoweredOnRef.current = isPoweredOn; },   [isPoweredOn]);
+  useEffect(() => { chaseModeRef.current  = chaseMode;  }, [chaseMode]);
+  useEffect(() => { chaseSpeedRef.current = chaseSpeed; }, [chaseSpeed]);
 
   // ── BLE ──────────────────────────────────────────────────────────────────
 
@@ -731,6 +741,7 @@ export default function App() {
   // ── FX mode select ───────────────────────────────────────────────────────
 
   const handleModeSelect = (m) => {
+    stopChase();
     setActiveDynamic(m.id);
     if (m.staticColor) {
       setColor(m.staticColor);
@@ -783,6 +794,94 @@ export default function App() {
     if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
     analyserRef.current = null; audioCtxRef.current = null;
   };
+
+  // ── Chase / Trail (software-driven) ──────────────────────────────────────
+
+  // HSV → RGB  (h: 0–360, s/v: 0–1)
+  const hsvToRgb = (h, s, v) => {
+    const c = v * s, x = c * (1 - Math.abs((h / 60) % 2 - 1)), m = v - c;
+    let r=0,g=0,b=0;
+    if      (h < 60)  { r=c; g=x; }
+    else if (h < 120) { r=x; g=c; }
+    else if (h < 180) { g=c; b=x; }
+    else if (h < 240) { g=x; b=c; }
+    else if (h < 300) { r=x; b=c; }
+    else              { r=c; b=x; }
+    return { r:Math.round((r+m)*255), g:Math.round((g+m)*255), b:Math.round((b+m)*255) };
+  };
+
+  const stopChase = useCallback(() => {
+    if (chaseTimerRef.current) { clearInterval(chaseTimerRef.current); chaseTimerRef.current = null; }
+    chaseModeRef.current = null;
+    setChaseMode(null);
+  }, []);
+
+  const startChase = useCallback((mode) => {
+    // Stop any existing chase / mic / fx
+    stopChase();
+    stopMic();
+    setActiveDynamic(null);
+
+    chaseModeRef.current = mode;
+    setChaseMode(mode);
+    chasePhaseRef.current = 0;
+
+    // Tick every 80 ms — fast enough for smooth animation, safe for BLE
+    const TICK = 80;
+    const TWO_PI = Math.PI * 2;
+
+    chaseTimerRef.current = setInterval(() => {
+      if (!charRef.current) return;
+      const phase = chasePhaseRef.current;
+      const m = chaseModeRef.current;
+      const bri = brightnessRef.current;
+
+      if (m === 'pulse') {
+        const inc = 0.08 + chaseSpeedRef.current * 0.07;  // 0.15–0.43 rad/tick
+        const k = (Math.sin(phase) + 1) / 2;
+        const { r, g, b } = colorRef.current;
+        if (protocolRef.current === '7e') {
+          writeRaw(build7E_brightness(Math.round(k * bri)));
+          writeRaw(build7E(r, g, b, null));
+        } else {
+          const f = (k * bri) / 100;
+          const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
+          const [p1,p2,p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+          writeRaw(build0x56(p1, p2, p3, 0x00));
+        }
+        chasePhaseRef.current = (phase + inc) % TWO_PI;
+
+      } else if (m === 'rainbow') {
+        const inc = 0.03 + chaseSpeedRef.current * 0.04;  // 0.07–0.23 rad/tick
+        const hue = (phase / TWO_PI) * 360;
+        const { r, g, b } = hsvToRgb(hue, 1, bri / 100);
+        if (protocolRef.current === '7e') {
+          writeRaw(build7E(r, g, b, null));
+        } else {
+          writeRaw(build0x56(r, g, b, 0x00));
+        }
+        chasePhaseRef.current = (phase + inc) % TWO_PI;
+
+      } else if (m === 'twinkle') {
+        const inc = 0.15 + chaseSpeedRef.current * 0.1;
+        const spike = Math.random() > 0.4 ? Math.random() : (Math.sin(phase) + 1) / 4;
+        const { r, g, b } = colorRef.current;
+        if (protocolRef.current === '7e') {
+          writeRaw(build7E_brightness(Math.round(spike * bri)));
+          writeRaw(build7E(r, g, b, null));
+        } else {
+          const f = (spike * bri) / 100;
+          const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
+          const [p1,p2,p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+          writeRaw(build0x56(p1, p2, p3, 0x00));
+        }
+        chasePhaseRef.current = (phase + inc) % TWO_PI;
+      }
+    }, TICK);
+  }, [stopChase, writeRaw]);
+
+  // Stop chase when disconnected
+  useEffect(() => { if (!isConnected) stopChase(); }, [isConnected, stopChase]);
 
   // ── Scheduler ────────────────────────────────────────────────────────────
 
@@ -1349,8 +1448,83 @@ export default function App() {
         {/* ── FX tab ── */}
         {activeTab === 'fx' && (
           <div className="space-y-2">
+
+            {/* ── Software Chase Effects ── */}
+            <NeonCard className="p-4 space-y-3"
+              style={{ border: chaseMode ? '1px solid rgba(180,100,255,0.35)' : '1px solid rgba(180,100,255,0.12)',
+                background: chaseMode ? 'rgba(30,0,50,0.7)' : 'rgba(0,15,35,0.7)' }}>
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <div className="w-2 h-2 rounded-full"
+                    style={{ background: chaseMode ? '#d946ef' : 'rgba(180,100,255,0.4)',
+                      boxShadow: chaseMode ? '0 0 8px #d946ef' : 'none',
+                      animation: chaseMode ? 'pulse 1s infinite' : 'none' }}/>
+                  <span className="text-[10px] font-black uppercase tracking-widest"
+                    style={{ color: chaseMode ? '#e879f9' : 'rgba(180,100,255,0.7)' }}>
+                    Chase / Trail
+                  </span>
+                  {chaseMode && (
+                    <span className="text-[8px] font-black uppercase px-1.5 py-0.5 rounded"
+                      style={{ background:'rgba(217,70,239,0.15)', border:'1px solid rgba(217,70,239,0.3)', color:'#e879f9' }}>
+                      Active
+                    </span>
+                  )}
+                </div>
+                {chaseMode && (
+                  <button onClick={stopChase}
+                    className="text-[9px] font-black uppercase tracking-widest transition-colors"
+                    style={{ color:'rgba(248,113,113,0.8)' }}>Stop</button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {[
+                  { id:'pulse',   label:'Pulse',   desc:'Breathe wave',   icon:'◉',  color:'rgba(0,200,255,0.8)'   },
+                  { id:'rainbow', label:'Rainbow',  desc:'Full spectrum',  icon:'◈',  color:'rgba(255,150,0,0.8)'   },
+                  { id:'twinkle', label:'Twinkle',  desc:'Sparkle burst',  icon:'✦',  color:'rgba(220,100,255,0.8)' },
+                ].map(e => (
+                  <button key={e.id}
+                    onClick={() => chaseMode === e.id ? stopChase() : startChase(e.id)}
+                    disabled={!isConnected}
+                    className="flex flex-col items-center gap-1.5 py-3 px-2 rounded-2xl transition-all active:scale-95 disabled:opacity-30"
+                    style={chaseMode === e.id
+                      ? { background:`rgba(${e.id==='pulse'?'0,200,255':e.id==='rainbow'?'255,150,0':'220,100,255'},0.12)`,
+                          border:`1px solid ${e.color}`,
+                          boxShadow:`0 0 16px ${e.color.replace('0.8','0.2')}` }
+                      : { background:'rgba(0,10,25,0.6)', border:'1px solid rgba(180,100,255,0.1)' }}>
+                    <span className="text-xl leading-none" style={{ color: chaseMode === e.id ? e.color : 'rgba(180,100,255,0.5)' }}>
+                      {e.icon}
+                    </span>
+                    <span className="text-[10px] font-black uppercase tracking-wide"
+                      style={{ color: chaseMode === e.id ? e.color : '#64748b' }}>
+                      {e.label}
+                    </span>
+                    <span className="text-[8px]" style={{ color:'rgba(100,116,139,0.6)' }}>
+                      {e.desc}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Speed slider — only shown when chase is active */}
+              {chaseMode && (
+                <div className="space-y-1.5 pt-1 border-t" style={{ borderColor:'rgba(180,100,255,0.1)' }}>
+                  <div className="flex justify-between items-center">
+                    <span className="text-[9px] font-black uppercase tracking-widest" style={{ color:'rgba(180,100,255,0.6)' }}>Speed</span>
+                    <span className="text-[9px] font-mono" style={{ color:'rgba(180,100,255,0.5)' }}>
+                      {['','Slow','','Medium','','Fast'][chaseSpeed] || chaseSpeed}
+                    </span>
+                  </div>
+                  <input type="range" min="1" max="5" value={chaseSpeed}
+                    onChange={e => setChaseSpeed(parseInt(e.target.value))}
+                    className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+                    style={{ accentColor:'#d946ef', background:'rgba(180,100,255,0.08)' }}/>
+                </div>
+              )}
+            </NeonCard>
+
             {/* Active mode indicator */}
-            {activeDynamic && (
+            {activeDynamic && !chaseMode && (
               <div className="flex items-center gap-3 px-4 py-3 rounded-2xl"
                 style={{ background:'rgba(0,255,255,0.05)', border:'1px solid rgba(0,255,255,0.15)' }}>
                 <div className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" style={{ boxShadow:'0 0 8px rgba(0,255,255,0.8)' }}/>
