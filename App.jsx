@@ -837,8 +837,19 @@ export default function App() {
       const bri = brightnessRef.current;
 
       if (m === 'pulse') {
-        const inc = 0.08 + chaseSpeedRef.current * 0.07;  // 0.15–0.43 rad/tick
-        const k = (Math.sin(phase) + 1) / 2;
+        // Trailing comet: instant bright spike → slow exponential decay → repeat
+        // phase 0→2π maps to one cycle. Attack is the first ~5% (spike), rest is decay tail.
+        const inc = 0.08 + chaseSpeedRef.current * 0.07;
+        const norm = phase / TWO_PI;               // 0→1 within a cycle
+
+        let k;
+        if (norm < 0.05) {
+          k = norm / 0.05;                          // sharp linear rise to peak (0→1 in 5%)
+        } else {
+          const decayPos = (norm - 0.05) / 0.95;   // 0→1 across the remaining 95%
+          k = Math.exp(-decayPos * 5);              // exponential decay (comet tail)
+        }
+
         const { r, g, b } = colorRef.current;
         if (protocolRef.current === '7e') {
           writeRaw(build7E_brightness(Math.round(k * bri)));
@@ -1479,7 +1490,7 @@ export default function App() {
 
               <div className="grid grid-cols-3 gap-2">
                 {[
-                  { id:'pulse',   label:'Pulse',   desc:'Breathe wave',   icon:'◉',  color:'rgba(0,200,255,0.8)'   },
+                  { id:'pulse',   label:'Comet',   desc:'Tail & fade',   icon:'◉',  color:'rgba(0,200,255,0.8)'   },
                   { id:'rainbow', label:'Rainbow',  desc:'Full spectrum',  icon:'◈',  color:'rgba(255,150,0,0.8)'   },
                   { id:'twinkle', label:'Twinkle',  desc:'Sparkle burst',  icon:'✦',  color:'rgba(220,100,255,0.8)' },
                 ].map(e => (
