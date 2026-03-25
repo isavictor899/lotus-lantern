@@ -3,7 +3,7 @@ import {
   Bluetooth, BluetoothOff, Zap, Sun, Play,
   Trash2, RefreshCcw, AlertCircle, Mic, MicOff,
   ChevronRight, X, Power, Calendar, CheckCircle,
-  Circle, Settings, ChevronDown, ChevronUp
+  Circle, Settings, ChevronDown, ChevronUp, Camera, CameraOff
 } from 'lucide-react';
 
 // ─── BLE CONFIG ───────────────────────────────────────────────────────────────
@@ -369,6 +369,11 @@ export default function App() {
   // Mic
   const [isMicActive, setIsMicActive]   = useState(false);
 
+  // Camera sync
+  const [isCamActive, setIsCamActive]   = useState(false);
+  const [camColor,    setCamColor]      = useState({ r:0, g:0, b:0 });
+  const [camError,    setCamError]      = useState('');
+
   // Power
   const [isPoweredOn, setIsPoweredOn]   = useState(true);
 
@@ -404,6 +409,11 @@ export default function App() {
   const chasePhaseRef  = useRef(0);
   const chaseModeRef   = useRef(null);
   const chaseSpeedRef  = useRef(3);
+  const isCamActiveRef = useRef(false);
+  const camStreamRef   = useRef(null);
+  const camRafRef      = useRef(null);
+  const camVideoRef    = useRef(null);   // hidden <video> element
+  const camCanvasRef   = useRef(null);   // hidden <canvas> for pixel sampling
 
   useEffect(() => { charRef.current = characteristic; },       [characteristic]);
   useEffect(() => { brightnessRef.current = brightness; },     [brightness]);
@@ -774,6 +784,7 @@ export default function App() {
 
   const toggleMic = async () => {
     if (isMicActiveRef.current) { stopMic(); return; }
+    stopCam(); // stop camera if running
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ audio:true, video:false });
       micStreamRef.current = stream;
@@ -794,6 +805,104 @@ export default function App() {
     if (micStreamRef.current) micStreamRef.current.getTracks().forEach(t => t.stop());
     analyserRef.current = null; audioCtxRef.current = null;
   };
+
+  // ── Camera sync ──────────────────────────────────────────────────────────
+
+  const SAMPLE_W = 16; // sample at 16×9 — tiny but enough for dominant color
+  const SAMPLE_H = 9;
+  const CAM_INTERVAL = 100; // ms between BLE writes (~10 Hz, safe for BLE)
+
+  const processCamFrame = useCallback(() => {
+    if (!isCamActiveRef.current) return;
+    const video  = camVideoRef.current;
+    const canvas = camCanvasRef.current;
+    if (!video || !canvas || video.readyState < 2) {
+      camRafRef.current = requestAnimationFrame(processCamFrame);
+      return;
+    }
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, SAMPLE_W, SAMPLE_H);
+    const data = ctx.getImageData(0, 0, SAMPLE_W, SAMPLE_H).data;
+
+    // Average every pixel for dominant color
+    let rSum = 0, gSum = 0, bSum = 0;
+    const total = SAMPLE_W * SAMPLE_H;
+    for (let i = 0; i < data.length; i += 4) {
+      rSum += data[i]; gSum += data[i+1]; bSum += data[i+2];
+    }
+    const r = Math.round(rSum / total);
+    const g = Math.round(gSum / total);
+    const b = Math.round(bSum / total);
+
+    setCamColor({ r, g, b });
+
+    // Scale by brightness
+    const f = brightnessRef.current / 100;
+    if (protocolRef.current === '7e') {
+      writeRaw(build7E(Math.round(r*f), Math.round(g*f), Math.round(b*f), null));
+    } else {
+      const remap = PIN_SEQUENCES[pinSeqRef.current] || PIN_SEQUENCES.RGB;
+      const [p1,p2,p3] = remap(Math.round(r*f), Math.round(g*f), Math.round(b*f));
+      writeRaw(build0x56(p1, p2, p3, 0x00));
+    }
+
+    camRafRef.current = requestAnimationFrame(processCamFrame);
+  }, [writeRaw]);
+
+  // Throttled wrapper so we don't flood BLE faster than CAM_INTERVAL
+  const startCamLoop = useCallback(() => {
+    let last = 0;
+    const tick = (ts) => {
+      if (!isCamActiveRef.current) return;
+      if (ts - last >= CAM_INTERVAL) {
+        last = ts;
+        processCamFrame();
+      }
+      camRafRef.current = requestAnimationFrame(tick);
+    };
+    camRafRef.current = requestAnimationFrame(tick);
+  }, [processCamFrame]);
+
+  const stopCam = useCallback(() => {
+    isCamActiveRef.current = false;
+    setIsCamActive(false);
+    if (camRafRef.current) cancelAnimationFrame(camRafRef.current);
+    if (camStreamRef.current) camStreamRef.current.getTracks().forEach(t => t.stop());
+    camStreamRef.current = null;
+  }, []);
+
+  const toggleCam = async () => {
+    if (isCamActiveRef.current) { stopCam(); return; }
+    setCamError('');
+    try {
+      // Stop anything else running
+      stopMic(); stopChase(); setActiveDynamic(null);
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: 'environment', // rear camera faces the TV
+          width:  { ideal: 320 },
+          height: { ideal: 180 },
+        },
+        audio: false,
+      });
+      camStreamRef.current = stream;
+      // Attach to hidden video element
+      const video = camVideoRef.current;
+      video.srcObject = stream;
+      video.play();
+      isCamActiveRef.current = true;
+      setIsCamActive(true);
+      // Wait one frame for video to be ready
+      video.onloadedmetadata = () => startCamLoop();
+    } catch (err) {
+      if (err.name === 'NotAllowedError') setCamError('Camera permission denied. Allow camera access and try again.');
+      else if (err.name === 'NotFoundError') setCamError('No camera found on this device.');
+      else setCamError(`Camera error: ${err.message}`);
+    }
+  };
+
+  // Stop cam on disconnect
+  useEffect(() => { if (!isConnected) stopCam(); }, [isConnected, stopCam]);
 
   // ── Chase / Trail (software-driven) ──────────────────────────────────────
 
@@ -1320,6 +1429,15 @@ export default function App() {
             {isMicActive ? <Mic className="w-4 h-4 text-pink-400"/> : <MicOff className="w-4 h-4 text-slate-500"/>}
           </button>
 
+          {/* Camera sync toggle */}
+          <button onClick={toggleCam} disabled={!isConnected} title={isCamActive ? 'Stop camera sync' : 'Start TV camera sync'}
+            className="w-9 h-9 rounded-full flex items-center justify-center transition-all active:scale-90 disabled:opacity-30"
+            style={isCamActive
+              ? { background:'rgba(34,197,94,0.2)', border:'1px solid rgba(34,197,94,0.5)', boxShadow:'0 0 15px rgba(34,197,94,0.3)' }
+              : { background:'rgba(0,15,35,0.8)', border:'1px solid rgba(0,255,255,0.1)' }}>
+            {isCamActive ? <Camera className="w-4 h-4 text-green-400"/> : <CameraOff className="w-4 h-4 text-slate-500"/>}
+          </button>
+
           {/* BLE */}
           <button onClick={() => setDrawerOpen(true)}
             className="px-3 py-2 rounded-full text-xs font-bold flex items-center gap-2 transition-all"
@@ -1352,6 +1470,53 @@ export default function App() {
             <button onClick={stopMic} className="text-[9px] font-black uppercase tracking-widest text-pink-400 hover:text-pink-200 transition-colors">Stop</button>
           </div>
         )}
+
+        {/* Camera sync active banner */}
+        {isCamActive && (
+          <div className="rounded-2xl overflow-hidden"
+            style={{ border:'1px solid rgba(34,197,94,0.3)', boxShadow:'0 0 20px rgba(34,197,94,0.07)' }}>
+            <div className="flex items-center justify-between px-4 py-3"
+              style={{ background:'rgba(0,30,15,0.8)' }}>
+              <div className="flex items-center gap-3">
+                <div className="w-2 h-2 rounded-full bg-green-400 animate-pulse" style={{ boxShadow:'0 0 8px rgba(34,197,94,0.8)' }}/>
+                <Camera className="w-3.5 h-3.5 text-green-400"/>
+                <span className="text-[10px] font-black uppercase tracking-widest text-green-300">TV Sync Active</span>
+              </div>
+              <button onClick={stopCam} className="text-[9px] font-black uppercase tracking-widest text-red-400 hover:text-red-300 transition-colors">Stop</button>
+            </div>
+            {/* Live color preview swatch */}
+            <div className="flex items-center gap-3 px-4 pb-3 pt-1"
+              style={{ background:'rgba(0,20,10,0.6)' }}>
+              <div className="w-8 h-8 rounded-xl flex-shrink-0 transition-colors duration-100"
+                style={{ backgroundColor:`rgb(${camColor.r},${camColor.g},${camColor.b})`,
+                  boxShadow:`0 0 12px rgba(${camColor.r},${camColor.g},${camColor.b},0.5)` }}/>
+              <div>
+                <p className="text-[9px] font-black uppercase tracking-widest text-green-400/60">Detected color</p>
+                <p className="text-[10px] font-mono text-green-300">
+                  rgb({camColor.r}, {camColor.g}, {camColor.b})
+                </p>
+              </div>
+              <p className="ml-auto text-[8px] text-slate-600 leading-relaxed text-right">
+                Point rear<br/>camera at TV
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Camera error */}
+        {camError && (
+          <div className="flex gap-2 p-3 rounded-xl"
+            style={{ background:'rgba(255,50,50,0.08)', border:'1px solid rgba(255,50,50,0.2)' }}>
+            <AlertCircle className="w-3.5 h-3.5 text-red-400 shrink-0 mt-0.5"/>
+            <p className="text-[10px] text-red-300 leading-relaxed">{camError}</p>
+          </div>
+        )}
+
+        {/* Hidden video + canvas for camera color sampling */}
+        <video ref={camVideoRef} playsInline muted
+          style={{ position:'absolute', width:1, height:1, opacity:0, pointerEvents:'none' }}/>
+        <canvas ref={camCanvasRef} width={16} height={9}
+          style={{ position:'absolute', width:1, height:1, opacity:0, pointerEvents:'none' }}/>
 
         {/* Power + Brightness */}
         <NeonCard className="p-5 space-y-4"
