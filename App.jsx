@@ -6,19 +6,15 @@ import {
   Circle, Settings, ChevronDown, ChevronUp, Camera, CameraOff
 } from 'lucide-react';
 
-// ─── BLE CONFIG ───────────────────────────────────────────────────────────────
 
-// Every known LED/RGB BLE controller service UUID found in the wild
 const KNOWN_LED_SERVICES = [
-  // ── ELK-BLED / Triones / SP110E ──
+
   '0000ffd5-0000-1000-8000-00805f9b34fb',
   '0000ffd0-0000-1000-8000-00805f9b34fb',
-  // ── Magic Home / LampSmart ──
+ 
   '0000ffe5-0000-1000-8000-00805f9b34fb',
   '0000ffe0-0000-1000-8000-00805f9b34fb',
-  // ── HM-10 / JDY-08 UART ──
-  '0000ffe1-0000-1000-8000-00805f9b34fb', // sometimes listed as service too
-  // ── Common 0xff__ short UUIDs ──
+ 
   '0000ff00-0000-1000-8000-00805f9b34fb',
   '0000ff01-0000-1000-8000-00805f9b34fb',
   '0000ff02-0000-1000-8000-00805f9b34fb',
@@ -26,12 +22,12 @@ const KNOWN_LED_SERVICES = [
   '0000ff10-0000-1000-8000-00805f9b34fb',
   '0000ff12-0000-1000-8000-00805f9b34fb',
   '0000ff20-0000-1000-8000-00805f9b34fb',
-  // ── ZengGe / iLedBlue ──
+ 
   '0000a002-0000-1000-8000-00805f9b34fb',
   '00001910-0000-1000-8000-00805f9b34fb',
-  // ── ISSC / Microchip UART ──
+
   '49535343-fe7d-4ae5-8fa9-9fafd205e455',
-  // ── Nordic UART (NUS) ──
+ 
   '6e400001-b5a3-f393-e0a9-e50e24dcca9e',
   // ── Silicon Labs OTA / BG ──
   '1d14d6ee-fd63-4fa1-bfa4-8f47b42119f0',
@@ -51,7 +47,7 @@ const KNOWN_LED_SERVICES = [
   '0000b000-0000-1000-8000-00805f9b34fb',
 ];
 
-// Ordered list of {svc, chr} pairs tried during normal connect
+
 const SERVICE_MAP = [
   // ── 0x56 protocol (ELK-BLED01, Triones, SP110E, ffd5/ffd9) ──
   { svc:'0000ffd5-0000-1000-8000-00805f9b34fb', chr:'0000ffd9-0000-1000-8000-00805f9b34fb', proto:'0x56' },
