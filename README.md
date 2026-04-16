@@ -53,3 +53,22 @@ git clone https://github.com/isavictor899/lotus-lantern.git
 cd lotus-lantern
 npm install
 npm run dev
+Deploy to Vercel
+npm run build
+# Push to GitHub — Vercel auto-deploys on push
+Build command: npm run build
+Output directory: dist
+Project Structure
+src/
+└── App.jsx          # Entire app — BLE engine, effects, UI
+public/
+└── index.html
+vite.config.js
+package.json
+BLE Protocol Reference
+7E Protocol (your device — fff0/fff3)
+Set Color   : 7E 07 05 03 RR GG BB 10 EF
+Set Effect  : 7E 05 03 <mode 0x00–0x17> 03 FF FF 00 EF
+Set Brightness: 7E 04 01 <0–100> FF FF FF 00 EF
+Power On    : 7E 04 04 01 FF FF FF 00 EF
+Power Off   : 7E 04 04 00 FF FF FF 00 EF
